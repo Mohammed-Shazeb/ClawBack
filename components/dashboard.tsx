@@ -1,0 +1,26 @@
+"use client";
+
+import Link from "next/link";
+import { ArrowUpRight, BriefcaseBusiness, Plus, RefreshCw, WalletCards } from "lucide-react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
+import { AppShell } from "./app-shell";
+import { useDemoUser } from "./demo-user";
+
+const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+export function Dashboard() {
+  const { userId, error } = useDemoUser();
+  const cases = useQuery(api.cases.list, userId ? { userId } : "skip");
+  const active = cases?.filter((item) => item.status !== "RESOLVED") ?? [];
+  const disputable = cases?.reduce((total, item) => total + item.potentiallyDisputableAmount, 0) ?? 0;
+  return <AppShell><div className="mx-auto max-w-7xl px-5 py-8 sm:px-8 lg:px-10 lg:py-10"><div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#82908a]">Overview</p><h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">Your recovery workspace</h1><p className="mt-2 text-sm text-[#69737d]">Track every deposit case from statement to resolution.</p></div><Link href="/cases/new" className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#173f35] px-4 text-sm font-semibold text-white hover:bg-[#235b4c]"><Plus size={17} /> Create case</Link></div>{error ? <ErrorBanner message={error} /> : null}<div className="mt-8 grid gap-4 sm:grid-cols-3"><StatCard label="Total cases" value={cases ? String(cases.length) : "—"} icon={<BriefcaseBusiness size={18} />} /><StatCard label="Active cases" value={cases ? String(active.length) : "—"} icon={<RefreshCw size={18} />} /><StatCard label="Potentially disputable" value={cases ? currency.format(disputable) : "—"} icon={<WalletCards size={18} />} /></div><section className="mt-8 overflow-hidden rounded-xl border border-[#e4e7eb] bg-white"><div className="flex items-center justify-between border-b border-[#edf0f2] px-5 py-4 sm:px-6"><div><h2 className="text-sm font-semibold">Recent cases</h2><p className="mt-1 text-xs text-[#89929b]">Your latest recovery work</p></div><Link href="/cases" className="text-xs font-semibold text-[#235b4c]">View all</Link></div>{cases === undefined ? <LoadingRows /> : cases.length === 0 ? <EmptyCases /> : <CaseRows cases={cases.slice(0, 5)} />}</section></div></AppShell>;
+}
+
+function StatCard({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) { return <div className="rounded-xl border border-[#e4e7eb] bg-white p-5"><div className="flex items-center justify-between"><p className="text-xs font-medium text-[#89929b]">{label}</p><span className="text-[#6d9387]">{icon}</span></div><p className="mt-4 text-2xl font-semibold tracking-[-0.04em]">{value}</p></div>; }
+function LoadingRows() { return <div className="space-y-3 p-5"><div className="h-12 animate-pulse rounded-lg bg-[#f3f5f5]" /><div className="h-12 animate-pulse rounded-lg bg-[#f3f5f5]" /></div>; }
+function EmptyCases() { return <div className="flex flex-col items-center px-6 py-16 text-center"><span className="flex size-12 items-center justify-center rounded-full bg-[#edf4f1] text-[#235b4c]"><BriefcaseBusiness size={21} /></span><h3 className="mt-4 text-sm font-semibold">No cases yet</h3><p className="mt-2 max-w-sm text-sm leading-6 text-[#89929b]">Forward your deposit statement to start a recovery case.</p><Link href="/cases/new" className="mt-5 inline-flex h-9 items-center gap-2 rounded-lg border border-[#cbd8d3] px-3 text-xs font-semibold text-[#235b4c]"><Plus size={15} /> Create case</Link></div>; }
+function CaseRows({ cases }: { cases: Array<{ _id: Id<"cases">; jurisdiction: string; depositAmount: number; totalDeductions: number; potentiallyDisputableAmount: number; status: string; createdAt: number }> }) { return <div className="divide-y divide-[#edf0f2]">{cases.map((item) => <Link key={item._id} href={`/cases/${item._id}`} className="grid gap-3 px-5 py-4 hover:bg-[#fafbfb] sm:grid-cols-[1.5fr_1fr_1fr_1fr_auto] sm:items-center sm:px-6"><div><p className="text-sm font-semibold">Case {item._id.slice(-6).toUpperCase()}</p><p className="mt-1 text-xs text-[#89929b]">{item.jurisdiction} · {new Date(item.createdAt).toLocaleDateString()}</p></div><Metric label="Deposit" value={currency.format(item.depositAmount)} /><Metric label="Deductions" value={currency.format(item.totalDeductions)} /><Metric label="Disputable" value={currency.format(item.potentiallyDisputableAmount)} /><span className="inline-flex w-fit items-center rounded-full bg-[#edf4f1] px-2.5 py-1 text-[11px] font-semibold text-[#235b4c]">{item.status}</span><ArrowUpRight size={16} className="hidden text-[#a1abb3] sm:block" /></Link>)}</div>; }
+function Metric({ label, value }: { label: string; value: string }) { return <div><p className="text-[10px] uppercase tracking-[0.12em] text-[#a0a8ae] sm:hidden">{label}</p><p className="text-sm font-medium text-[#4a5660]">{value}</p></div>; }
+function ErrorBanner({ message }: { message: string }) { return <div className="mt-6 rounded-lg border border-[#e6c9c5] bg-[#fff7f6] px-4 py-3 text-sm text-[#9c4338]">{message}</div>; }
