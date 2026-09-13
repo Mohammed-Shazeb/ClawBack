@@ -1,0 +1,6 @@
+model_list:
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: openai/deepseek/deepseek-v4-pro
+      api_base: https://www.getunikey.ai/v1
+      api_key: os.environ/UNIKEY_API_KEY

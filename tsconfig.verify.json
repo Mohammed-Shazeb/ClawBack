@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "es2022",
+    "outDir": ".verify"
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "convex/extraction.ts",
+    "convex/validators.ts",
+    "convex/errors.ts",
+    "convex/agentmail.ts",
+    "convex/svix.ts"
+  ]
+}
