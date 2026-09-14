@@ -2,11 +2,14 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 import {
+  assessmentOutcomeValidator,
+  assessmentStatusValidator,
   attachmentValidator,
   caseStatusValidator,
   deductionCategoryValidator,
   emailProcessingStatusValidator,
   inboxStatusValidator,
+  researchStatusValidator,
 } from "./validators";
 
 export default defineSchema({
@@ -45,10 +48,42 @@ export default defineSchema({
     /** Absent when the statement did not state an amount for this item. */
     amount: v.optional(v.number()),
     category: v.optional(deductionCategoryValidator),
-    isDisputable: v.optional(v.boolean()),
-    reasoning: v.optional(v.string()),
     /** The inbound email this deduction was read from. */
     sourceEmailId: v.optional(v.id("emails")),
+    /** Where research for this deduction stands. Absent on deductions written
+     * before research existed; treated as PENDING by the research pipeline. */
+    researchStatus: v.optional(researchStatusValidator),
+    /** Identifies the research pass that currently owns this deduction. A pass
+     * may only write its results if this still matches the pass that claimed
+     * the deduction, so a superseded or duplicated run cannot overwrite newer
+     * evidence. */
+    researchRunId: v.optional(v.string()),
+    /** The question researched for this deduction, once one has been generated. */
+    researchQuestion: v.optional(v.string()),
+    /** Why the last research pass failed, when it did. */
+    researchError: v.optional(v.string()),
+    /** Where the evidence-based assessment stands. Absent on deductions written
+     * before assessment existed; treated as PENDING by the pipeline. */
+    assessmentStatus: v.optional(assessmentStatusValidator),
+    /** Identifies the assessment pass that currently owns this deduction, so a
+     * superseded run cannot overwrite a newer assessment. */
+    assessmentRunId: v.optional(v.string()),
+    /** The validated assessment outcome, once assessment completed. */
+    assessment: v.optional(assessmentOutcomeValidator),
+    /** Concise evidence-based explanation shown to the renter. This is the
+     * validated reasoning summary, never private model chain-of-thought. */
+    assessmentReason: v.optional(v.string()),
+    /** What this deduction contributes to the case's disputable total. Kept
+     * within the stated amount; 0 unless the outcome is POTENTIALLY_DISPUTABLE. */
+    potentiallyDisputableAmount: v.optional(v.number()),
+    /** The sources the assessment cites, all found by research for this
+     * deduction. */
+    assessmentSourceIds: v.optional(v.array(v.id("sources"))),
+    /** What the assessment said was missing, when evidence was insufficient. */
+    assessmentMissingInformation: v.optional(v.array(v.string())),
+    /** Why the last assessment failed, when it did. */
+    assessmentError: v.optional(v.string()),
+    assessedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_case", ["caseId"]),
@@ -64,12 +99,24 @@ export default defineSchema({
 
   sources: defineTable({
     caseId: v.id("cases"),
+    /** The deduction whose research found this source, when it was found by
+     * research rather than entered some other way. */
+    deductionId: v.optional(v.id("deductions")),
     title: v.string(),
     url: v.string(),
+    /** Expected to identify the source's standing (e.g. a government agency),
+     * not to reach any legal conclusion. */
+    authority: v.string(),
     jurisdiction: v.string(),
+    /** The retrieved passage relevant to the deduction, when the provider
+     * returned one. External, untrusted text. */
     relevantText: v.optional(v.string()),
+    /** When the source was retrieved from the provider. */
+    retrievedAt: v.number(),
     addedAt: v.number(),
-  }).index("by_case", ["caseId"]),
+  })
+    .index("by_case", ["caseId"])
+    .index("by_deduction", ["deductionId"]),
 
   letters: defineTable({
     caseId: v.id("cases"),

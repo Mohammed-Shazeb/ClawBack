@@ -121,7 +121,9 @@ export const createWithInbox = action({
   handler: async (ctx, args): Promise<Id<"cases">> => {
     const caseId = await ctx.runMutation(api.cases.create, args);
 
-    void provisionInbox(ctx, caseId);
+    // Awaited: an unawaited operation in an action may never run, which would
+    // leave the case without its inbox.
+    await provisionInbox(ctx, caseId);
 
     return caseId;
   },

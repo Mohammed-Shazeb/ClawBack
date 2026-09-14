@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "verify": "tsc -p tsconfig.verify.json && node .verify/scripts/verify-pipeline.js"
+    "verify": "tsc -p tsconfig.verify.json && node .verify/scripts/verify-pipeline.js",
+    "verify:e2e": "node scripts/verify-e2e.mjs",
+    "mocks": "node scripts/mock-providers.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

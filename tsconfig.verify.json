@@ -14,6 +14,9 @@
     "convex/validators.ts",
     "convex/errors.ts",
     "convex/agentmail.ts",
-    "convex/svix.ts"
+    "convex/svix.ts",
+    "convex/firecrawl.ts",
+    "convex/questions.ts",
+    "convex/assessment.ts"
   ]
 }

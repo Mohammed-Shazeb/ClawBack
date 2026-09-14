@@ -28,6 +28,13 @@ import {
  * orchestration, so a failed model call can never leave a half-written case.
  */
 
+/**
+ * Case statuses that analysis is allowed to move the case out of. Anything at
+ * or beyond ANALYSIS (RESEARCHING, EVIDENCE_FOUND, …) is left alone so a
+ * revised statement cannot rewind progress that already happened.
+ */
+const PRE_ANALYSIS_STATUSES = ["RECEIVED"] as const;
+
 /** What the case UI shows for a statement, without leaking the whole body. */
 export const listByCase = query({
   args: {
@@ -179,10 +186,15 @@ export const claimForProcessing = internalMutation({
       updatedAt: now,
     });
 
-    await ctx.db.patch(caseId, {
-      status: "ANALYZING",
-      updatedAt: now,
-    });
+    // Analysis is starting. Only a case that has not moved past analysis is
+    // moved into ANALYZING: a revision arriving on a case that already has
+    // evidence must not rewind its workflow status.
+    if (PRE_ANALYSIS_STATUSES.includes(caseData.status as (typeof PRE_ANALYSIS_STATUSES)[number])) {
+      await ctx.db.patch(caseId, {
+        status: "ANALYZING",
+        updatedAt: now,
+      });
+    }
 
     await ctx.db.insert("timelineEvents", {
       caseId,
@@ -283,16 +295,43 @@ export const applyExtraction = internalMutation({
 
     const now = Date.now();
 
+    // A later statement supersedes the deductions read from an earlier one:
+    // revised statements would otherwise double-count every charge. Only the
+    // deductions this email extracted are replaced; the email rows themselves
+    // are kept for the record.
+    const previousDeductionIds = await ctx.db
+      .query("deductions")
+      .withIndex("by_case", (q) => q.eq("caseId", caseId))
+      .collect()
+      .then((rows) => rows.map((row) => row._id));
+
+    const deductionIds: Id<"deductions">[] = [];
     for (const deduction of args.extraction.deductions) {
-      await ctx.db.insert("deductions", {
+      const deductionId = await ctx.db.insert("deductions", {
         caseId,
         description: deduction.description.slice(0, 500),
         amount: deduction.amount,
         category: deduction.category,
         sourceEmailId: email._id,
+        researchStatus: "PENDING",
+        researchRunId: undefined,
+        assessmentStatus: "PENDING",
+        assessmentRunId: undefined,
         createdAt: now,
         updatedAt: now,
       });
+      deductionIds.push(deductionId);
+    }
+
+    for (const previousId of previousDeductionIds) {
+      const sources = await ctx.db
+        .query("sources")
+        .withIndex("by_deduction", (q) => q.eq("deductionId", previousId))
+        .collect();
+      for (const source of sources) {
+        await ctx.db.delete(source._id);
+      }
+      await ctx.db.delete(previousId);
     }
 
     const deductions = await ctx.db
@@ -316,9 +355,9 @@ export const applyExtraction = internalMutation({
         args.extraction.depositAmount ?? caseData.depositAmount
       ),
       totalDeductions,
-      // Nothing is claimed to be recoverable before legal analysis runs.
+      // Every deduction was just rewritten, so nothing is claimed as
+      // disputable until the new deductions have been researched and assessed.
       potentiallyDisputableAmount: 0,
-      status: "ANALYZING",
       updatedAt: now,
     });
 
@@ -342,11 +381,25 @@ export const applyExtraction = internalMutation({
       createdAt: now,
     });
 
+    // Analysis advances the case, but only from a status that precedes it: a
+    // revised statement on a case that already has evidence must not drag the
+    // case backwards to ANALYZING. The deductions it extracted have been reset
+    // to PENDING, so the research pipeline will move the case on again.
+    if (PRE_ANALYSIS_STATUSES.includes(caseData.status as (typeof PRE_ANALYSIS_STATUSES)[number])) {
+      await ctx.db.patch(caseId, { status: "ANALYZING", updatedAt: now });
+    }
+
     await ctx.db.patch(email._id, {
       processingStatus: "PROCESSED",
       processingError: undefined,
       updatedAt: now,
     });
+
+    // Each extracted deduction moves on to official-source research, outside
+    // this transaction so a slow provider call cannot hold up the email write.
+    for (const deductionId of deductionIds) {
+      await ctx.scheduler.runAfter(0, internal.research.researchDeduction, { deductionId });
+    }
 
     return { caseId, deductionCount, totalDeductions };
   },

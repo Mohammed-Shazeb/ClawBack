@@ -13,8 +13,9 @@ const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "
 export function Dashboard() {
   const { userId, error } = useDemoUser();
   const cases = useQuery(api.cases.list, userId ? { userId } : "skip");
-  const active = cases?.filter((item: any) => item.status !== "RESOLVED") ?? [];
-  const disputable = cases?.reduce((total: number, item: any) => total + item.potentiallyDisputableAmount, 0) ?? 0;
+  const active = cases?.filter((item) => item.status !== "RESOLVED") ?? [];
+  const disputable =
+    cases?.reduce((total, item) => total + item.potentiallyDisputableAmount, 0) ?? 0;
   return <AppShell><div className="mx-auto max-w-7xl px-5 py-8 sm:px-8 lg:px-10 lg:py-10"><div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#82908a]">Overview</p><h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">Your recovery workspace</h1><p className="mt-2 text-sm text-[#69737d]">Track every deposit case from statement to resolution.</p></div><Link href="/cases/new" className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#173f35] px-4 text-sm font-semibold text-white hover:bg-[#235b4c]"><Plus size={17} /> Create case</Link></div>{error ? <ErrorBanner message={error} /> : null}<div className="mt-8 grid gap-4 sm:grid-cols-3"><StatCard label="Total cases" value={cases ? String(cases.length) : "—"} icon={<BriefcaseBusiness size={18} />} /><StatCard label="Active cases" value={cases ? String(active.length) : "—"} icon={<RefreshCw size={18} />} /><StatCard label="Potentially disputable" value={cases ? currency.format(disputable) : "—"} icon={<WalletCards size={18} />} /></div><section className="mt-8 overflow-hidden rounded-xl border border-[#e4e7eb] bg-white"><div className="flex items-center justify-between border-b border-[#edf0f2] px-5 py-4 sm:px-6"><div><h2 className="text-sm font-semibold">Recent cases</h2><p className="mt-1 text-xs text-[#89929b]">Your latest recovery work</p></div><Link href="/cases" className="text-xs font-semibold text-[#235b4c]">View all</Link></div>{cases === undefined ? <LoadingRows /> : cases.length === 0 ? <EmptyCases /> : <CaseRows cases={cases.slice(0, 5)} />}</section></div></AppShell>;
 }
 

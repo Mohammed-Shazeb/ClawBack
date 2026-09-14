@@ -71,6 +71,65 @@ export const inboxStatusValidator = v.union(
 );
 
 /**
+ * Per-deduction research state, deliberately separate from the case workflow
+ * status. A deduction is researchable while PENDING (or FAILED, for a retry),
+ * RESEARCHING while Firecrawl and the question generator are being asked,
+ * COMPLETED once a pass finishes (which may legitimately find zero
+ * authoritative sources), and FAILED when the retrieval itself threw.
+ */
+export const RESEARCH_STATUSES = ["PENDING", "RESEARCHING", "COMPLETED", "FAILED"] as const;
+
+export type ResearchStatus = (typeof RESEARCH_STATUSES)[number];
+
+export const researchStatusValidator = v.union(
+  ...RESEARCH_STATUSES.map((status) => v.literal(status))
+);
+
+/**
+ * Per-deduction assessment pipeline state, separate from the outcome: an
+ * assessment is claimable while PENDING (or FAILED, for a retry), ASSESSING
+ * while the model call runs, COMPLETED once a validated outcome is stored, and
+ * FAILED when the model call or validation threw.
+ */
+export const ASSESSMENT_PIPELINE_STATUSES = [
+  "PENDING",
+  "ASSESSING",
+  "COMPLETED",
+  "FAILED",
+] as const;
+
+export type AssessmentPipelineStatus = (typeof ASSESSMENT_PIPELINE_STATUSES)[number];
+
+export const assessmentStatusValidator = v.union(
+  ...ASSESSMENT_PIPELINE_STATUSES.map((status) => v.literal(status))
+);
+
+/**
+ * The outcome of an evidence-based assessment. POTENTIALLY_DISPUTABLE does not
+ * mean legally invalid: it means the retrieved source indicates the charge may
+ * not satisfy the applicable conditions.
+ */
+export const ASSESSMENT_OUTCOMES = [
+  "POTENTIALLY_DISPUTABLE",
+  "LIKELY_VALID",
+  "NEEDS_MORE_INFORMATION",
+] as const;
+
+export type AssessmentOutcome = (typeof ASSESSMENT_OUTCOMES)[number];
+
+export const assessmentOutcomeValidator = v.union(
+  ...ASSESSMENT_OUTCOMES.map((outcome) => v.literal(outcome))
+);
+
+/** An assessment after validation, as stored on the deduction. */
+export const validatedAssessmentValidator = v.object({
+  assessment: assessmentOutcomeValidator,
+  assessmentReason: v.string(),
+  potentiallyDisputableAmount: v.number(),
+  assessmentSourceIds: v.array(v.id("sources")),
+  assessmentMissingInformation: v.array(v.string()),
+});
+/**
  * Attachment metadata only. Attachment bodies are never downloaded or parsed
  * in this milestone, so nothing here claims the document was read.
  */

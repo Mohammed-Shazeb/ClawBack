@@ -9,6 +9,7 @@
 const CREDENTIAL_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{6,}/g,
   /\bam_[A-Za-z0-9_-]{6,}/g,
+  /\bfc-[A-Za-z0-9_-]{6,}/g,
   /\bwhsec_[A-Za-z0-9+/_=-]{6,}/g,
   /\bBearer\s+[A-Za-z0-9._~+/-]{6,}=*/gi,
   /\b(?:api[_-]?key|authorization|secret)["'\s:=]+[A-Za-z0-9._~+/-]{6,}/gi,

@@ -6,10 +6,12 @@ export function CaseFinances({
   depositAmount,
   totalDeductions,
   potentiallyDisputableAmount,
+  assessed,
 }: {
   depositAmount: number;
   totalDeductions: number;
   potentiallyDisputableAmount: number;
+  assessed: boolean;
 }) {
   return (
     <div className="grid gap-4 sm:grid-cols-3">
@@ -22,7 +24,11 @@ export function CaseFinances({
       <MoneyCard
         label="Potentially disputable"
         value={formatCurrency(potentiallyDisputableAmount)}
-        note="Legal analysis has not run yet, so nothing is claimed as recoverable."
+        note={
+          assessed
+            ? "Sum of the deductions the retrieved sources indicate may be disputable. Not a legal conclusion."
+            : "Assessment has not completed yet, so nothing is claimed as disputable."
+        }
       />
     </div>
   );

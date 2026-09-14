@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useQuery } from "convex/react";
-import { ArrowLeft, Clock3, FileText, Gavel, Mail, ScanSearch } from "lucide-react";
+import { ArrowLeft, Clock3, FileText, Mail } from "lucide-react";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -22,6 +22,7 @@ export function CaseOverview({ caseId }: { caseId: string }) {
   const timeline = useQuery(api.cases.getTimeline, userId ? { caseId: id, userId } : "skip");
   const emails = useQuery(api.emails.listByCase, userId ? { caseId: id, userId } : "skip");
   const deductions = useQuery(api.deductions.listByCase, userId ? { caseId: id, userId } : "skip");
+  const sources = useQuery(api.sources.listByCase, userId ? { caseId: id, userId } : "skip");
 
   if (caseData === null) {
     return (
@@ -38,9 +39,10 @@ export function CaseOverview({ caseId }: { caseId: string }) {
 
   const isAnalyzing =
     emails?.some(
-      (email: any) =>
-        email.processingStatus === "RECEIVED" || email.processingStatus === "PROCESSING"
+      (email) => email.processingStatus === "RECEIVED" || email.processingStatus === "PROCESSING"
     ) ?? false;
+  const assessed =
+    deductions?.some((deduction) => deduction.assessmentStatus === "COMPLETED") ?? false;
 
   return (
     <AppShell>
@@ -75,12 +77,18 @@ export function CaseOverview({ caseId }: { caseId: string }) {
                 depositAmount={caseData.depositAmount}
                 totalDeductions={caseData.totalDeductions}
                 potentiallyDisputableAmount={caseData.potentiallyDisputableAmount}
+                assessed={assessed}
               />
             </div>
 
             <div className="mt-8 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
               <div className="space-y-6">
-                <CaseDeductions deductions={deductions} isAnalyzing={isAnalyzing} />
+                <CaseDeductions
+                  userId={userId as Id<"users">}
+                  deductions={deductions}
+                  sources={sources}
+                  isAnalyzing={isAnalyzing}
+                />
                 <CaseEmailAddress
                   caseId={caseId}
                   userId={userId as Id<"users">}
@@ -109,7 +117,7 @@ export function CaseOverview({ caseId }: { caseId: string }) {
                     <p className="p-5 text-sm text-[#89929b]">No activity recorded yet.</p>
                   ) : (
                     <div className="p-5">
-                      {timeline.map((event: any) => (
+                      {timeline.map((event) => (
                         <div key={event._id} className="relative flex gap-3 pb-6 last:pb-0">
                           <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[#edf4f1] text-[#235b4c]">
                             <Clock3 size={14} />
@@ -128,19 +136,9 @@ export function CaseOverview({ caseId }: { caseId: string }) {
 
                 <div className="space-y-3">
                   <FutureBlock
-                    icon={<ScanSearch size={17} />}
-                    title="Evidence"
-                    text="Evidence collection is not started yet."
-                  />
-                  <FutureBlock
                     icon={<FileText size={17} />}
-                    title="Sources & dispute letter"
-                    text="Applicable regulations and drafting will appear here."
-                  />
-                  <FutureBlock
-                    icon={<Gavel size={17} />}
-                    title="Disputable amounts"
-                    text="Determining what is recoverable needs legal analysis, which has not run yet."
+                    title="Dispute letter"
+                    text="Drafting the dispute letter from the assessed deductions comes next."
                   />
                   <FutureBlock
                     icon={<Mail size={17} />}

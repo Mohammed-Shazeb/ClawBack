@@ -133,3 +133,105 @@ NEXT_PUBLIC_CONVEX_URL=https://... (or http://127.0.0.1:3210 for local dev)
 - Build dispute-letter generation
 - Add landlord response handling
 - Connect to email sending service for outbound communication
+
+---
+
+## 2026-09-14 — Audit + Day 3 (Official-Source Research & Evidence-Based Assessment)
+
+### Engineering Audit
+
+A full audit of Milestones 1 and 2 was performed by reading the actual code, schema,
+Convex functions, UI, environment and generated types rather than trusting prior
+summaries. Findings are recorded in full in `AUDIT.md`. In summary:
+
+- **5 CRITICAL** — one hand-fabricated generated file (`convex/_generated/api.d.ts`
+  contained an admitted manual edit), one case-status regression where a revised
+  statement rewound an analysed case to `ANALYZING`, two research
+  duplication/idempotency defects, and one live concurrency defect that silently
+  stranded deductions mid-pipeline with no recorded error.
+- **4 IMPORTANT** — a validator that widened source ids and forced an unchecked cast,
+  an inconsistent disputable total during re-research, a deliberate retry-mutation
+  authorization posture, and a provider summary being stored as if it were an
+  authoritative passage.
+- **5 ACCEPTABLE** — demo identity, metadata-only attachments, TLD-based authority
+  classification, no OCR, and a briefly-stale case total.
+
+The concurrency defect (CRITICAL-5) was only reproducible by actually running the
+pipeline. It is the reason the pipeline now splits every shared-row write into its own
+small, retryable transaction.
+
+### Day 3 First Half — Firecrawl Official Housing Research Foundation
+
+- `convex/firecrawl.ts` — server-side Firecrawl search. The API key is read from the
+  deployment environment and never reaches the browser.
+- `convex/questions.ts` — builds an *evidence-seeking* research question from the
+  jurisdiction, the landlord's own wording and the deduction category ("what does the
+  authoritative rule say"), never a conclusory one ("is this illegal").
+- `convex/research.ts` — per-deduction research pipeline with its own state machine
+  (`PENDING` → `RESEARCHING` → `COMPLETED` / `FAILED`), independent of the case status.
+- `convex/sources.ts` — stores evidence in the existing `sources` table (no second
+  source table): `caseId`, `deductionId`, `title`, `url`, `authority`, `jurisdiction`,
+  `relevantText`, `retrievedAt`, `createdAt`. Re-running research replaces a deduction's
+  sources rather than duplicating them.
+
+Official sources are preferred by host allow-list (`.gov`, `state.xx.us`, legislative
+and court hosts); law-firm marketing pages, aggregators and forums are filtered out and
+are never stored. When no authoritative source is found the deduction records that
+explicitly instead of inventing one.
+
+### Day 3 Second Half — Milestone 3: Evidence-Based Deduction Assessment
+
+- `convex/assessment.ts` — the assessment schema, the system prompt, Zod validation and
+  the disputable-amount calculation. The model receives structured input only:
+  jurisdiction, deposit, the landlord's wording, the deduction amount and category, the
+  research question, and the retrieved source passages.
+- `convex/assessments.ts` — the assessment pipeline
+  (`PENDING` → `ASSESSING` → `COMPLETED` / `FAILED`) with the outcome stored on the
+  deduction as `POTENTIALLY_DISPUTABLE`, `LIKELY_VALID` or `NEEDS_MORE_INFORMATION`.
+- The model must not invent statutes, citations, case law or URLs. Output is validated
+  with Zod before anything is written; an amount that is negative, exceeds the stated
+  deduction, or contradicts the outcome is rejected or capped.
+- The case total is **computed from the stored per-deduction assessments** on the
+  server — never taken from the model's own total.
+- The case advances to `EVIDENCE_FOUND` when research exists and at least one deduction
+  has been assessed. It never jumps ahead to `DRAFT_READY`.
+- Language is deliberately cautious throughout: "potentially disputable", "may warrant
+  further review", "the available source indicates". No deduction is called illegal and
+  no recovery is promised.
+
+### What NOT Implemented (Per Spec)
+
+- Dispute letter generation
+- Outbound AgentMail sending
+- Landlord response analysis
+- Automatic legal actions / autonomous decision-making
+- Multi-agent architecture
+- Vector database / RAG framework
+- Nationwide legal database / legal chatbot
+- Recovery guarantees
+
+### Verification
+
+- TypeScript: 0 errors
+- ESLint: 0 errors (4 warnings, all in generated Convex files)
+- Production build: compiled successfully
+- Offline suite (`npm run verify`): 161/161
+- End-to-end suite (`npm run verify:e2e`): 68/68 against the live local Convex
+  deployment with mock providers
+
+The end-to-end suite covers webhook signature verification (unsigned, tampered and
+stale deliveries all rejected), delivery idempotency, extraction, official-source
+filtering, assessment capping, case totals derived from stored deductions, the
+`EVIDENCE_FOUND` transition, real timeline events, cross-user authorization,
+re-run idempotency, revision-without-rewind, and failure handling.
+
+Firecrawl, OpenAI and AgentMail were exercised through local mocks. No live provider
+call was made, so those integrations are MOCK VERIFIED only.
+
+### Known Limitations
+
+- Demo workspace identity (single user; production auth needed)
+- No custom email domain routing (AgentMail default only)
+- No document OCR (attachments tracked but not parsed)
+- Authority classification is host/TLD based and deliberately conservative
+- The case disputable total can lag the last assessment by one pass

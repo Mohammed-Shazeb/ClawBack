@@ -8,11 +8,19 @@
 
 import { createHmac, randomBytes } from "node:crypto";
 
+import type { Id } from "../convex/_generated/dataModel";
 import {
   agentMailWebhookEventSchema,
   caseInboxLocalPart,
   normalizeInboundMessage,
 } from "../convex/agentmail";
+import {
+  ASSESSMENT_SYSTEM_PROMPT,
+  assessmentJsonSchema,
+  buildAssessmentUserPrompt,
+  computePotentiallyDisputableAmount,
+  validateAssessment,
+} from "../convex/assessment";
 import { toSafeMessage } from "../convex/errors";
 import {
   buildStatementUserPrompt,
@@ -21,6 +29,12 @@ import {
   parseDepositStatement,
   toExtractionResult,
 } from "../convex/extraction";
+import {
+  classifyAuthority,
+  extractRelevantPassage,
+  parseSearchResponse,
+} from "../convex/firecrawl";
+import { buildResearchQuestion } from "../convex/questions";
 import { bytesToBase64, verifySvixSignature } from "../convex/svix";
 import { DEDUCTION_CATEGORIES } from "../convex/validators";
 
@@ -376,6 +390,9 @@ function verifyFailureMessages() {
   const withAgentMailKey = toSafeMessage(new Error("401 from am_9f8e7d6c5b4a using Bearer am_9f8e7d6c5b4a"));
   check("redacts AgentMail keys", !withAgentMailKey.includes("am_9f8e7d6c5b4a"), withAgentMailKey);
 
+  const withFirecrawlKey = toSafeMessage(new Error("401 for fc-0a1b2c3d4e5f6g7h8i"));
+  check("redacts Firecrawl keys", !withFirecrawlKey.includes("fc-0a1b2c3d4e5f6g7h8i"), withFirecrawlKey);
+
   const long = toSafeMessage(new Error("x".repeat(4000)));
   check("truncates long messages", long.length <= 300, String(long.length));
 
@@ -386,9 +403,405 @@ function verifyFailureMessages() {
   );
 }
 
+function verifyResearchQuestions() {
+  section("Research question generation");
+  const question = buildResearchQuestion({
+    jurisdiction: "California",
+    description: "Carpet replacement",
+    category: "ORDINARY_WEAR",
+  });
+
+  check("mentions the jurisdiction", question.includes("California"));
+  check("keeps the landlord's wording", question.includes('"Carpet replacement"'));
+  check("asks about the category", question.includes("ordinary wear"));
+  check(
+    "asks for the applicable conditions, not a verdict",
+    question.includes("conditions") && question.endsWith("?")
+  );
+  check(
+    "does not assert a legal conclusion",
+    !/illegal|unlawful|must repay/i.test(question)
+  );
+
+  const feeQuestion = buildResearchQuestion({
+    jurisdiction: "Texas",
+    description: "Administrative fee",
+    category: "FEE",
+  });
+  check("fee focus mentions non-repair fees", feeQuestion.includes("non-repair fee"));
+
+  const unknownQuestion = buildResearchQuestion({
+    jurisdiction: "Nevada",
+    description: "Miscellaneous",
+    category: undefined,
+  });
+  check(
+    "an unclassified deduction still produces a question",
+    unknownQuestion.includes("Nevada") && unknownQuestion.includes('"Miscellaneous"')
+  );
+
+  check(
+    "the same deduction always produces the same question",
+    buildResearchQuestion({ jurisdiction: "California", description: "Carpet replacement", category: "ORDINARY_WEAR" }) ===
+      buildResearchQuestion({ jurisdiction: "California", description: "Carpet replacement", category: "ORDINARY_WEAR" })
+  );
+}
+
+function verifyAuthorityClassification() {
+  section("Official source classification");
+
+  check("accepts a state .gov agency page", classifyAuthority("https://www.dre.ca.gov/consumers") === "OFFICIAL");
+  check("accepts a federal .gov page", classifyAuthority("https://www.hud.gov/topics") === "OFFICIAL");
+  check("accepts a legislature host", classifyAuthority("https://leginfo.legislature.ca.gov/faces/codes.xhtml") === "OFFICIAL");
+  check("accepts a courts host", classifyAuthority("https://courts.ca.gov/selfhelp") === "OFFICIAL");
+  check("accepts a state.<xx>.us host", classifyAuthority("https://www.hhs.state.tx.us/rules") === "OFFICIAL");
+
+  check("rejects a blog", classifyAuthority("https://example.com/blog/security-deposits") === "NON_OFFICIAL");
+  check("rejects a law-firm marketing page", classifyAuthority("https://www.lawfirm.com/practices/security-deposit") === "NON_OFFICIAL");
+  check("rejects reddit", classifyAuthority("https://www.reddit.com/r/legaladvice") === "NON_OFFICIAL");
+  check("rejects a fake .gov suffix", classifyAuthority("https://example.com/gov-site") === "NON_OFFICIAL");
+  check("rejects gov in the path only", classifyAuthority("https://www.blog.net/california.gov/rules") === "NON_OFFICIAL");
+  check("rejects garbage urls", classifyAuthority("not a url") === "NON_OFFICIAL");
+}
+
+function verifyFirecrawlParsing() {
+  section("Firecrawl search response parsing");
+
+  const classic = parseSearchResponse({
+    success: true,
+    data: [
+      { url: "https://www.dre.ca.gov/a", title: "  Security deposits  ", description: "Rules about deposits.", markdown: "## Deposits\n\nA landlord may deduct..." },
+      { url: "https://example.com/b", title: null, description: null },
+      { url: "", title: "empty url" },
+    ],
+  });
+  check("classic array shape yields two results", classic.length === 2, String(classic.length));
+  check("titles are trimmed", classic[0].title === "Security deposits");
+  check("markdown is kept for passage extraction", classic[0].markdown?.includes("deduct") === true);
+  check("missing optional fields become undefined", classic[1].title === undefined && classic[1].description === undefined);
+
+  const wrapped = parseSearchResponse({
+    success: true,
+    data: { results: [{ url: "https://courts.ca.gov/x", title: "Courts", description: null, markdown: null }] },
+  });
+  check("metadata-wrapped results are read", wrapped.length === 1 && wrapped[0].url === "https://courts.ca.gov/x");
+
+  const webWrapped = parseSearchResponse({
+    success: true,
+    data: { web: { results: [{ url: "https://www.hud.gov/y", title: "HUD", description: null, markdown: null }] } },
+  });
+  check("web-wrapped results are read", webWrapped.length === 1 && webWrapped[0].url === "https://www.hud.gov/y");
+
+  check("a non-list body becomes an empty list", parseSearchResponse({ success: true, data: 42 }).length === 0);
+  check("an arbitrary object becomes an empty list", parseSearchResponse({ hello: "world" }).length === 0);
+  check("null becomes an empty list", parseSearchResponse(null).length === 0);
+  check("a bare array body becomes an empty list", parseSearchResponse([1, 2, 3]).length === 0);
+}
+
+function verifyPassageExtraction() {
+  section("Relevant passage extraction");
+  const markdown = [
+    "# Tenant rights in California",
+    "",
+    "This page describes unrelated intake procedures and general agency contact details.",
+    "",
+    "A landlord may use the security deposit for unpaid rent or repairs beyond ordinary wear and tear. Deductions must be itemized in writing.",
+    "",
+    "Carpet replacement charged as ordinary maintenance may not be deductible where the carpet suffered only normal wear.",
+  ].join("\n");
+
+  const passage = extractRelevantPassage(markdown, "Carpet replacement");
+  check("a passage is extracted", passage !== undefined);
+  check("the passage mentions deductions", /deduct|deposit/i.test(passage ?? ""));
+  check("the passage is bounded", (passage ?? "").length <= 1200);
+
+  const noKeywords = extractRelevantPassage("Welcome to our homepage. Menus and navigation links live here.", "Carpet");
+  check("a page with nothing on-topic yields no passage", noKeywords === undefined);
+
+  check("missing markdown yields no passage", extractRelevantPassage(undefined, "Carpet") === undefined);
+  check(
+    "a very long page is truncated with an ellipsis",
+    (extractRelevantPassage(`Deposit rules. ${"filler ".repeat(400)}`, "Deposit") ?? "").endsWith("…")
+  );
+
+  // The stored passage must be text that was genuinely selected out of the
+  // retrieved page. A provider summary is not a passage, so a page with no
+  // usable on-topic text must yield nothing rather than something made up.
+  const summaryOnly = extractRelevantPassage(
+    "Official guidance on security deposit deductions and itemized statements.",
+    "Broken cabinet"
+  );
+  check(
+    "a provider summary is not promoted into a passage",
+    summaryOnly === undefined || summaryOnly.includes("security deposit"),
+    summaryOnly
+  );
+}
+
+/**
+ * Source fixtures for the assessment checks. These ids never touch a database,
+ * so they are cast: the point of the checks is label→id translation and the
+ * amount invariants, not id generation.
+ */
+const validAssessmentSources = [
+  { label: "S1", id: "src1111111111111111111111" as Id<"sources"> },
+  { label: "S2", id: "src2222222222222222222222" as Id<"sources"> },
+];
+
+function verifyAssessmentValidation() {
+  section("Assessment output validation");
+  const valid = validateAssessment(
+    {
+      assessmentStatus: "POTENTIALLY_DISPUTABLE",
+      reasoning: "The available source indicates deductions must exceed ordinary wear and tear.",
+      potentiallyDisputableAmount: 400,
+      supportingSourceIds: ["S1", "S2"],
+      missingInformation: [],
+    },
+    { deductionAmount: 400, sources: validAssessmentSources }
+  );
+  check("a valid disputable assessment passes", valid !== null);
+  check("source labels are translated to ids", valid?.assessmentSourceIds.length === 2);
+  check("the amount is kept", valid?.potentiallyDisputableAmount === 400);
+
+  const clamped = validateAssessment(
+    {
+      assessmentStatus: "POTENTIALLY_DISPUTABLE",
+      reasoning: "The available source indicates the charge may not satisfy the conditions.",
+      potentiallyDisputableAmount: 900,
+      supportingSourceIds: ["S1"],
+      missingInformation: [],
+    },
+    { deductionAmount: 400, sources: validAssessmentSources }
+  );
+  check("an amount above the deduction is capped at the deduction", clamped?.potentiallyDisputableAmount === 400);
+
+  const unquantified = validateAssessment(
+    {
+      assessmentStatus: "POTENTIALLY_DISPUTABLE",
+      reasoning: "The source indicates the charge may not be deductible.",
+      potentiallyDisputableAmount: 500,
+      supportingSourceIds: ["S1"],
+      missingInformation: ["The stated amount for this charge"],
+    },
+    { deductionAmount: undefined, sources: validAssessmentSources }
+  );
+  check("an unquantified deduction contributes 0", unquantified?.potentiallyDisputableAmount === 0);
+  check("missing information is preserved", unquantified?.assessmentMissingInformation.length === 1);
+
+  const likelyValid = validateAssessment(
+    {
+      assessmentStatus: "LIKELY_VALID",
+      reasoning: "The available source indicates repair costs for damage are deductible.",
+      potentiallyDisputableAmount: 400,
+      supportingSourceIds: ["S1"],
+      missingInformation: [],
+    },
+    { deductionAmount: 400, sources: validAssessmentSources }
+  );
+  check("a likely-valid assessment contributes 0", likelyValid?.potentiallyDisputableAmount === 0);
+
+  const needsInfo = validateAssessment(
+    {
+      assessmentStatus: "NEEDS_MORE_INFORMATION",
+      reasoning: "The provided passages do not state whether this charge is allowed.",
+      potentiallyDisputableAmount: 0,
+      supportingSourceIds: [],
+      missingInformation: ["Move-out inspection report"],
+    },
+    { deductionAmount: 400, sources: validAssessmentSources }
+  );
+  check("insufficient evidence passes with no sources", needsInfo !== null);
+
+  const inventedSources = validateAssessment(
+    {
+      assessmentStatus: "POTENTIALLY_DISPUTABLE",
+      reasoning: "According to a source I know about.",
+      potentiallyDisputableAmount: 100,
+      supportingSourceIds: ["S9"],
+      missingInformation: [],
+    },
+    { deductionAmount: 400, sources: validAssessmentSources }
+  );
+  check("an outcome citing only invented sources is rejected", inventedSources === null);
+
+  const rejected: Array<[string, unknown]> = [
+    ["negative amount", { assessmentStatus: "POTENTIALLY_DISPUTABLE", reasoning: "x", potentiallyDisputableAmount: -50, supportingSourceIds: ["S1"], missingInformation: [] }],
+    ["unknown status", { assessmentStatus: "DEFINITELY_ILLEGAL", reasoning: "x", potentiallyDisputableAmount: 50, supportingSourceIds: ["S1"], missingInformation: [] }],
+    ["amount as a string", { assessmentStatus: "NEEDS_MORE_INFORMATION", reasoning: "x", potentiallyDisputableAmount: "0", supportingSourceIds: [], missingInformation: [] }],
+    ["missing reasoning", { assessmentStatus: "NEEDS_MORE_INFORMATION", potentiallyDisputableAmount: 0, supportingSourceIds: [], missingInformation: [] }],
+    ["missing supportingSourceIds", { assessmentStatus: "NEEDS_MORE_INFORMATION", reasoning: "x", potentiallyDisputableAmount: 0, missingInformation: [] }],
+    ["free-form text", "The deduction seems unfair."],
+    ["null", null],
+  ];
+  for (const [name, payload] of rejected) {
+    check(`rejects ${name}`, validateAssessment(payload, { deductionAmount: 400, sources: validAssessmentSources }) === null);
+  }
+}
+
+function verifyCaseTotals() {
+  section("Case disputable totals come from stored assessments");
+  const deductions: Array<{
+    amount?: number;
+    assessment?: "POTENTIALLY_DISPUTABLE" | "LIKELY_VALID" | "NEEDS_MORE_INFORMATION";
+    potentiallyDisputableAmount?: number;
+  }> = [
+    { amount: 400, assessment: "POTENTIALLY_DISPUTABLE", potentiallyDisputableAmount: 400 },
+    { amount: 300, assessment: "POTENTIALLY_DISPUTABLE", potentiallyDisputableAmount: 350 },
+    { amount: 150, assessment: "LIKELY_VALID", potentiallyDisputableAmount: 0 },
+    { amount: 150, assessment: "NEEDS_MORE_INFORMATION", potentiallyDisputableAmount: 150 },
+    { amount: 200, assessment: "POTENTIALLY_DISPUTABLE", potentiallyDisputableAmount: 175 },
+    { amount: undefined, assessment: "POTENTIALLY_DISPUTABLE", potentiallyDisputableAmount: 100 },
+    { amount: 90, assessment: undefined, potentiallyDisputableAmount: 90 },
+  ];
+
+  check(
+    "only disputable assessments count, capped at their amounts",
+    computePotentiallyDisputableAmount(deductions) === 875,
+    String(computePotentiallyDisputableAmount(deductions))
+  );
+  check("no assessments means 0", computePotentiallyDisputableAmount(deductions.slice(6)) === 0);
+  check("an empty case means 0", computePotentiallyDisputableAmount([]) === 0);
+  check("amounts are rounded to cents", computePotentiallyDisputableAmount([
+    { amount: 100, assessment: "POTENTIALLY_DISPUTABLE", potentiallyDisputableAmount: 33.333 },
+  ]) === 33.33);
+}
+
+/**
+ * The stored reasoning is shown to renters as Clawback's explanation, so it must
+ * never read as an absolute legal verdict or a promise of money back. These
+ * checks pin the wording the prompts ask for.
+ */
+function verifyNoLegalConclusions() {
+  section("No fabricated or absolute legal language");
+
+  const forbidden = [
+    /\billegal\b/i,
+    /\bunlawful\b/i,
+    /\byou will (win|recover)\b/i,
+    /\bthe landlord (broke|violated) the law\b/i,
+    /\bguarantee[ds]?\b/i,
+    /\b\d{1,3}% chance\b/i,
+  ];
+
+  const prompts = [ASSESSMENT_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT];
+
+  check(
+    "the assessment prompt bans declaring a deduction illegal",
+    /never state that a deduction is illegal/i.test(ASSESSMENT_SYSTEM_PROMPT)
+  );
+  check(
+    "the assessment prompt bans promising recovery",
+    /never.{0,80}recover money/i.test(ASSESSMENT_SYSTEM_PROMPT)
+  );
+  check(
+    "the assessment prompt requires cautious wording",
+    /may warrant further review/i.test(ASSESSMENT_SYSTEM_PROMPT)
+  );
+  check(
+    "the assessment prompt prefers missing information over guessing",
+    /prefer this over guessing/i.test(ASSESSMENT_SYSTEM_PROMPT)
+  );
+  check(
+    "the assessment prompt forbids inventing citations and URLs",
+    /do not invent[\s\S]{0,120}(citations|urls)/i.test(ASSESSMENT_SYSTEM_PROMPT)
+  );
+
+  for (const [index, prompt] of prompts.entries()) {
+    const label = index === 0 ? "assessment" : "extraction";
+    for (const pattern of forbidden) {
+      // The prompts quote the forbidden phrasings only inside a negation.
+      const offending = prompt
+        .split(/[.\n]/)
+        .filter((sentence) => pattern.test(sentence) && !/\b(never|not|do not|no)\b/i.test(sentence));
+      check(`the ${label} prompt never asserts "${pattern.source}"`, offending.length === 0, offending[0]);
+    }
+  }
+
+  check(
+    "the extraction prompt keeps the landlord's wording without judging it",
+    /Keep their phrasing/i.test(EXTRACTION_SYSTEM_PROMPT)
+  );
+  check(
+    "the extraction prompt refuses to judge legality",
+    /Never judge whether a deduction is legal/i.test(EXTRACTION_SYSTEM_PROMPT)
+  );
+}
+
+function verifyAssessmentPrompt() {
+  section("Assessment prompt and schema");
+  check(
+    "the prompt forbids inventing law",
+    ASSESSMENT_SYSTEM_PROMPT.includes("Do not invent laws")
+  );
+  check(
+    "the prompt forbids promising recovery",
+    ASSESSMENT_SYSTEM_PROMPT.includes("Never state that a deduction is illegal")
+  );
+  check(
+    "the prompt prefers insufficient evidence over guessing",
+    ASSESSMENT_SYSTEM_PROMPT.includes("Prefer this over guessing")
+  );
+
+  const schema = assessmentJsonSchema as Record<string, unknown>;
+  check("$schema is stripped", !("$schema" in schema));
+  check("top level is an object", schema.type === "object");
+  check("top level forbids extra properties", schema.additionalProperties === false);
+
+  const properties = Object.keys((schema.properties ?? {}) as Record<string, unknown>);
+  const required = (schema.required as string[]) ?? [];
+  check(
+    "every property is required",
+    properties.every((key) => required.includes(key)),
+    properties.filter((key) => !required.includes(key)).join(", ")
+  );
+
+  const statusSchema = ((schema.properties as Record<string, unknown>).assessmentStatus as Record<string, unknown>);
+  check(
+    "the status enum matches the stored outcomes",
+    JSON.stringify(statusSchema.enum) ===
+      JSON.stringify(["POTENTIALLY_DISPUTABLE", "LIKELY_VALID", "NEEDS_MORE_INFORMATION"])
+  );
+
+  const amountSchema = JSON.stringify((schema.properties as Record<string, unknown>).potentiallyDisputableAmount);
+  check("amount is constrained to non-negative figures", amountSchema.includes("minimum"), amountSchema);
+
+  const prompt = buildAssessmentUserPrompt({
+    jurisdiction: "California",
+    depositAmount: 1500,
+    description: "Broken cabinet",
+    amount: 400,
+    category: "TENANT_DAMAGE",
+    researchQuestion: "What rules apply?",
+    sources: [
+      { label: "S1", title: "Official guidance", authority: "Government / Housing Authority", jurisdiction: "California", relevantText: "Deductions must exceed ordinary wear." },
+      { label: "S2", title: "Second source", authority: "Government / Housing Authority", jurisdiction: "California" },
+    ],
+  });
+  check("the prompt carries the jurisdiction", prompt.includes("Jurisdiction: California"));
+  check("the prompt carries the deposit", prompt.includes("$1500.00"));
+  check("the prompt keeps the landlord's wording", prompt.includes('"Broken cabinet"'));
+  check("the prompt carries the deduction amount", prompt.includes("$400.00"));
+  check("the prompt carries the research question", prompt.includes("What rules apply?"));
+  check("every source is labelled", prompt.includes("[S1]") && prompt.includes("[S2]"));
+  check("passages are quoted", prompt.includes('Passage: "Deductions must exceed ordinary wear."'));
+  check(
+    "a source without a passage says so instead of staying silent",
+    prompt.includes("the provider returned no passage")
+  );
+}
+
 async function main() {
   await verifySignatures();
   verifyFailureMessages();
+  verifyResearchQuestions();
+  verifyAuthorityClassification();
+  verifyFirecrawlParsing();
+  verifyPassageExtraction();
+  verifyAssessmentValidation();
+  verifyCaseTotals();
+  verifyNoLegalConclusions();
+  verifyAssessmentPrompt();
 
   console.log(`\n${checks - failures}/${checks} checks passed`);
 

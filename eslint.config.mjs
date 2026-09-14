@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local scratch/verification build output, not source.
+    ".verify/**",
+    "_t/**",
   ]),
 ]);
 
