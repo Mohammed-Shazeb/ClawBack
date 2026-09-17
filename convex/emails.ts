@@ -2,7 +2,7 @@ import { v } from "convex/values";
 
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import type { ActionCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
 import { fetchInboundMessageBody } from "./agentmail";
 import { toSafeMessage } from "./errors";
@@ -34,6 +34,21 @@ import {
  * revised statement cannot rewind progress that already happened.
  */
 const PRE_ANALYSIS_STATUSES = ["RECEIVED"] as const;
+
+/**
+ * Case statuses from which recording a landlord response is a forward move.
+ * Everything up to and including SENT precedes a response; LANDLORD_RESPONDED
+ * and RESOLVED are already at or past it and must not be rewound.
+ */
+const PRE_RESPONSE_STATUSES = [
+  "RECEIVED",
+  "ANALYZING",
+  "RESEARCHING",
+  "EVIDENCE_FOUND",
+  "DRAFT_READY",
+  "AWAITING_APPROVAL",
+  "SENT",
+] as const;
 
 /** What the case UI shows for a statement, without leaking the whole body. */
 export const listByCase = query({
@@ -68,12 +83,75 @@ export const listByCase = query({
 });
 
 /**
+ * The case's correspondence, in the order it happened: the dispute that was
+ * sent and anything the landlord sent back. Statements are excluded — this is
+ * the communication feed, not the analysis input list.
+ *
+ * Bodies are included because the renter needs to read what the landlord
+ * actually wrote; the model's reading is shown alongside it, never instead of it.
+ */
+export const listCommunication = query({
+  args: {
+    caseId: v.id("cases"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const caseData = await ctx.db.get(args.caseId);
+    if (!caseData) throw new Error("Case not found");
+    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+
+    const emails = await ctx.db
+      .query("emails")
+      .withIndex("by_case", (q) => q.eq("caseId", args.caseId))
+      .collect();
+
+    return emails
+      .filter((email) => email.direction === "OUTBOUND" || email.isReply === true)
+      .sort((left, right) => {
+        const leftAt = left.sentAt ?? left.receivedAt ?? left.createdAt ?? 0;
+        const rightAt = right.sentAt ?? right.receivedAt ?? right.createdAt ?? 0;
+        return leftAt - rightAt;
+      })
+      .map((email) => ({
+        _id: email._id,
+        direction: email.direction,
+        subject: email.subject,
+        body: email.body,
+        sender: email.sender,
+        recipient: email.recipient,
+        sentAt: email.sentAt,
+        receivedAt: email.receivedAt,
+        createdAt: email.createdAt,
+        sendStatus: email.sendStatus,
+        sendError: email.sendError,
+        externalMessageId: email.externalMessageId,
+        responseAnalysisStatus: email.responseAnalysisStatus,
+        responseAnalysis: email.responseAnalysis,
+        responseAnalysisError: email.responseAnalysisError,
+        responseAnalyzedAt: email.responseAnalyzedAt,
+      }));
+  },
+});
+
+/**
  * Stores an inbound delivery. Idempotent on the provider's message id, so a
  * retried webhook returns the stored row instead of creating a second one.
  *
  * Convex mutations are transactional: if two deliveries of the same message
  * race, the second one re-runs against the first one's writes and takes the
  * duplicate branch.
+ *
+ * Two kinds of mail arrive on a case inbox, and they are handled very
+ * differently:
+ *
+ *  - a deposit statement, which is extracted into deductions;
+ *  - a landlord's reply to the dispute, which is correspondence and must never
+ *    be run through extraction — extraction replaces every deduction on the
+ *    case, so treating a reply as a statement would destroy the analysis the
+ *    dispute was built from.
+ *
+ * The reply is identified by the provider's thread id first, then by the
+ * In-Reply-To/References headers. A subject line is never the primary signal.
  */
 export const ingestInbound = internalMutation({
   args: {
@@ -84,6 +162,9 @@ export const ingestInbound = internalMutation({
     subject: v.string(),
     body: v.string(),
     receivedAt: v.number(),
+    threadId: v.optional(v.string()),
+    inReplyTo: v.optional(v.string()),
+    references: v.array(v.string()),
     attachments: v.array(attachmentValidator),
   },
   handler: async (ctx, args) => {
@@ -99,6 +180,7 @@ export const ingestInbound = internalMutation({
         emailId: existing._id,
         caseId: existing.caseId ?? null,
         created: false,
+        kind: existing.isReply ? ("REPLY" as const) : ("STATEMENT" as const),
       };
     }
 
@@ -108,6 +190,8 @@ export const ingestInbound = internalMutation({
       .first();
 
     const now = Date.now();
+
+    const isReply = caseData ? await looksLikeReply(ctx, caseData, args) : false;
 
     const emailId = await ctx.db.insert("emails", {
       caseId: caseData?._id,
@@ -119,7 +203,11 @@ export const ingestInbound = internalMutation({
       inboxId: args.inboxId,
       externalMessageId: args.externalMessageId,
       provider: "agentmail",
-      processingStatus: "RECEIVED",
+      threadId: args.threadId,
+      inReplyTo: args.inReplyTo,
+      references: args.references.length > 0 ? args.references : undefined,
+      isReply: isReply ? true : undefined,
+      processingStatus: isReply ? undefined : "RECEIVED",
       needsReview: caseData ? undefined : true,
       attachments: args.attachments.length > 0 ? args.attachments : undefined,
       receivedAt: args.receivedAt,
@@ -129,7 +217,18 @@ export const ingestInbound = internalMutation({
 
     if (!caseData) {
       // No case owns this inbox. Store it for review rather than guessing.
-      return { emailId, caseId: null, created: true };
+      return { emailId, caseId: null, created: true, kind: "STATEMENT" as const };
+    }
+
+    if (isReply) {
+      return await recordReply(ctx, {
+        caseId: caseData._id,
+        caseStatus: caseData.status,
+        emailId,
+        sender: args.sender,
+        subject: args.subject,
+        now,
+      });
     }
 
     await ctx.db.insert("timelineEvents", {
@@ -153,9 +252,110 @@ export const ingestInbound = internalMutation({
       emailId,
     });
 
-    return { emailId, caseId: caseData._id, created: true };
+    return { emailId, caseId: caseData._id, created: true, kind: "STATEMENT" as const };
   },
 });
+
+/**
+ * Whether an inbound message is a reply to the dispute rather than a new
+ * statement.
+ *
+ * Order matters, strongest evidence first:
+ *
+ *  1. the provider's thread id matches the case's dispute thread;
+ *  2. the message's In-Reply-To/References name a message we sent on this case;
+ *  3. the case has already sent a dispute, so further mail is correspondence.
+ *
+ * Rule 3 is the safety net: once a dispute is out, the case's deductions are
+ * the thing under discussion, and re-running extraction on the next message
+ * would silently replace them. A statement arriving after a dispute is far less
+ * likely than a reply, and a misclassified statement is recoverable while
+ * destroyed analysis is not.
+ */
+async function looksLikeReply(
+  ctx: MutationCtx,
+  caseData: { _id: Id<"cases">; threadId?: string; status: string },
+  args: { threadId?: string; inReplyTo?: string; references: string[] }
+): Promise<boolean> {
+  if (caseData.threadId && args.threadId && caseData.threadId === args.threadId) {
+    return true;
+  }
+
+  const candidateIds = [
+    ...(args.inReplyTo ? [args.inReplyTo] : []),
+    ...args.references,
+  ];
+
+  for (const candidate of candidateIds) {
+    const parent = await ctx.db
+      .query("emails")
+      .withIndex("by_external_message", (q) => q.eq("externalMessageId", candidate))
+      .first();
+
+    // A parent we sent on this case settles it.
+    if (parent && parent.direction === "OUTBOUND" && parent.caseId === caseData._id) {
+      return true;
+    }
+  }
+
+  const sentLetter = await ctx.db
+    .query("letters")
+    .withIndex("by_case_and_status", (q) =>
+      q.eq("caseId", caseData._id).eq("status", "SENT")
+    )
+    .first();
+
+  return sentLetter !== null;
+}
+
+/** Stores a landlord reply and queues its structured reading. */
+async function recordReply(
+  ctx: MutationCtx,
+  {
+    caseId,
+    caseStatus,
+    emailId,
+    sender,
+    subject,
+    now,
+  }: {
+    caseId: Id<"cases">;
+    caseStatus: string;
+    emailId: Id<"emails">;
+    sender?: string;
+    subject: string;
+    now: number;
+  }
+) {
+  await ctx.db.insert("timelineEvents", {
+    caseId,
+    type: "LANDLORD_RESPONDED",
+    description: "Landlord response received",
+    metadata: { emailId, sender, subject },
+    createdAt: now,
+  });
+
+  // Forward-only: a reply cannot normally precede the dispute, but if a race
+  // produced one the case is still moved on, and a case already at
+  // LANDLORD_RESPONDED or RESOLVED is left alone rather than rewound.
+  if (PRE_RESPONSE_STATUSES.includes(caseStatus as (typeof PRE_RESPONSE_STATUSES)[number])) {
+    await ctx.db.patch(caseId, { status: "LANDLORD_RESPONDED", updatedAt: now });
+  } else {
+    await ctx.db.patch(caseId, { updatedAt: now });
+  }
+
+  await ctx.db.patch(emailId, {
+    responseAnalysisStatus: "PENDING",
+    updatedAt: now,
+  });
+
+  // Reading the reply is a separate pass; the webhook acknowledges now.
+  await ctx.scheduler.runAfter(0, internal.responses.analyzeLandlordResponse, {
+    emailId,
+  });
+
+  return { emailId, caseId, created: true, kind: "REPLY" as const };
+}
 
 /**
  * Marks an email as being processed and moves its case into ANALYZING.

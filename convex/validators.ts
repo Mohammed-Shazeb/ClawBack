@@ -44,6 +44,88 @@ export const emailProcessingStatusValidator = v.union(
   ...EMAIL_PROCESSING_STATUSES.map((status) => v.literal(status))
 );
 
+/** Which way a stored message travelled. */
+export const EMAIL_DIRECTIONS = ["INBOUND", "OUTBOUND"] as const;
+
+export type EmailDirection = (typeof EMAIL_DIRECTIONS)[number];
+
+export const emailDirectionValidator = v.union(
+  ...EMAIL_DIRECTIONS.map((direction) => v.literal(direction))
+);
+
+/**
+ * Delivery state for an outbound message. Separate from the letter's workflow
+ * status: a letter is APPROVED before a send is ever attempted, and a send can
+ * fail while the letter stays approved and retryable.
+ *
+ * SENT is only ever written after AgentMail confirms it accepted the message.
+ */
+export const OUTBOUND_SEND_STATUSES = ["SENDING", "SENT", "FAILED"] as const;
+
+export type OutboundSendStatus = (typeof OUTBOUND_SEND_STATUSES)[number];
+
+export const outboundSendStatusValidator = v.union(
+  ...OUTBOUND_SEND_STATUSES.map((status) => v.literal(status))
+);
+
+/**
+ * Structured reading of a landlord's reply.
+ *
+ * This records what the message *says*, not what it legally means. Every flag
+ * is a statement about the text ("the landlord asks for more documents"), never
+ * a conclusion about the renter's position, and `summary` must not add anything
+ * the message does not contain.
+ */
+export const responseAnalysisValidator = v.object({
+  /** Neutral restatement of what the reply says. */
+  summary: v.string(),
+  acceptsDispute: v.boolean(),
+  rejectsDispute: v.boolean(),
+  requestsMoreInformation: v.boolean(),
+  offersPartialReimbursement: v.boolean(),
+  /** Only when the reply names a figure for what it will pay. */
+  offeredAmount: v.optional(v.number()),
+  providesNewEvidence: v.boolean(),
+  /** What the new evidence is, when the reply includes any. */
+  newEvidenceSummary: v.optional(v.string()),
+  /** Things the reply asks of the renter. */
+  followUpQuestions: v.array(v.string()),
+  /** What the reply leaves unclear. */
+  missingInformation: v.array(v.string()),
+});
+
+export type ResponseAnalysis = {
+  summary: string;
+  acceptsDispute: boolean;
+  rejectsDispute: boolean;
+  requestsMoreInformation: boolean;
+  offersPartialReimbursement: boolean;
+  offeredAmount?: number;
+  providesNewEvidence: boolean;
+  newEvidenceSummary?: string;
+  followUpQuestions: string[];
+  missingInformation: string[];
+};
+
+/**
+ * Where the reading of a landlord reply stands, separate from the reply itself:
+ * a reply is stored the moment it arrives, and is ANALYZING while the model
+ * call runs, COMPLETED once a validated reading is stored, and FAILED when the
+ * model call or validation threw. A reply with no reading is still a reply.
+ */
+export const RESPONSE_ANALYSIS_STATUSES = [
+  "PENDING",
+  "ANALYZING",
+  "COMPLETED",
+  "FAILED",
+] as const;
+
+export type ResponseAnalysisStatus = (typeof RESPONSE_ANALYSIS_STATUSES)[number];
+
+export const responseAnalysisStatusValidator = v.union(
+  ...RESPONSE_ANALYSIS_STATUSES.map((status) => v.literal(status))
+);
+
 /**
  * What the landlord said the deduction was for. This is a description of the
  * charge as stated, not a legal assessment of it.
@@ -120,6 +202,47 @@ export type AssessmentOutcome = (typeof ASSESSMENT_OUTCOMES)[number];
 export const assessmentOutcomeValidator = v.union(
   ...ASSESSMENT_OUTCOMES.map((outcome) => v.literal(outcome))
 );
+
+/**
+ * Dispute-letter workflow status. Deliberately explicit and human-gated: a
+ * letter can only reach APPROVED through an owner-triggered approval, and SENT
+ * is reserved for the next milestone, which will actually hand the letter to
+ * the mail provider.
+ */
+export const LETTER_STATUSES = ["DRAFT", "AWAITING_APPROVAL", "APPROVED", "SENT"] as const;
+
+export type LetterStatus = (typeof LETTER_STATUSES)[number];
+
+export const letterStatusValidator = v.union(
+  ...LETTER_STATUSES.map((status) => v.literal(status))
+);
+
+/**
+ * Letter pipeline state, separate from the letter's workflow status: a letter
+ * is GENERATING while the model call runs, READY once a validated draft is
+ * stored, and FAILED when the model call or validation threw.
+ */
+export const LETTER_PIPELINE_STATUSES = [
+  "PENDING",
+  "GENERATING",
+  "READY",
+  "FAILED",
+] as const;
+
+export type LetterPipelineStatus = (typeof LETTER_PIPELINE_STATUSES)[number];
+
+export const letterPipelineStatusValidator = v.union(
+  ...LETTER_PIPELINE_STATUSES.map((status) => v.literal(status))
+);
+
+/** A generated letter after validation, before it is stored. */
+export const validatedLetterValidator = v.object({
+  recipient: v.string(),
+  subject: v.string(),
+  body: v.string(),
+  /** The stored sources the letter's claims rest on. */
+  supportingSourceIds: v.array(v.id("sources")),
+});
 
 /** An assessment after validation, as stored on the deduction. */
 export const validatedAssessmentValidator = v.object({

@@ -62,13 +62,28 @@ http.route({
 
     const message = normalizeInboundMessage(event.data.message);
 
-    const result = await ctx.runMutation(internal.emails.ingestInbound, message);
+    // `references` is always present on the normalized message; the mutation's
+    // validator expects it, so it is passed explicitly rather than spread.
+    const result = await ctx.runMutation(internal.emails.ingestInbound, {
+      inboxId: message.inboxId,
+      externalMessageId: message.externalMessageId,
+      sender: message.sender,
+      recipient: message.recipient,
+      subject: message.subject,
+      body: message.body,
+      receivedAt: message.receivedAt,
+      threadId: message.threadId,
+      inReplyTo: message.inReplyTo,
+      references: message.references,
+      attachments: message.attachments,
+    });
 
     return jsonResponse(200, {
       received: true,
       emailId: result.emailId,
       created: result.created,
       associated: result.caseId !== null,
+      kind: result.kind,
     });
   }),
 });

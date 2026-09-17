@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "verify": "tsc -p tsconfig.verify.json && node .verify/scripts/verify-pipeline.js",
     "verify:e2e": "node scripts/verify-e2e.mjs",
+    "verify:ui": "esbuild scripts/ui-render/entry.tsx --bundle --platform=node --format=esm --outfile=.verify/ui-render-bundle.mjs --alias:convex/react=./scripts/ui-render/stubs/convex-react.js --alias:@/convex/_generated/api=./scripts/ui-render/stubs/api.js --alias:@=./ --loader:.tsx=tsx --external:react --external:react-dom --external:react-dom/server --external:lucide-react --log-level=warning && node .verify/ui-render-bundle.mjs",
     "mocks": "node scripts/mock-providers.mjs"
   },
   "dependencies": {

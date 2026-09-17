@@ -163,12 +163,22 @@ export const assessDeduction = internalAction({
       });
 
       // The total is recomputed in a separate transaction so the deduction write
-      // above stays contention-free. A failure here only delays the summary, it
-      // does not lose the assessment.
+      // above stays contention-free. Sibling assessments also refresh it, so a
+      // lost race is not data loss — but the letter workflow reads this figure,
+      // so a single retry is attempted before giving up.
       if (stored) {
-        await ctx.runMutation(internal.assessments.refreshCaseDisputableTotal, {
-          caseId: stored.caseId,
-        });
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            await ctx.runMutation(internal.assessments.refreshCaseDisputableTotal, {
+              caseId: stored.caseId,
+            });
+            break;
+          } catch {
+            // Another sibling is writing the case; try once more, then stop.
+            // The next assessment to complete recomputes the total anyway, and
+            // `recalcDisputableTotal` is idempotent, so this is safe to skip.
+          }
+        }
       }
 
       return stored ? { assessment: stored.assessment } : null;
@@ -196,8 +206,7 @@ export const storeAssessment = internalMutation({
     const deduction = await ctx.db.get(args.deductionId);
     if (!deduction) return null;
 
-    // A superseded run must not write over the run that replaced it. This is the
-    // real ownership check: the status check below is only a cheap early exit.
+    // A superseded run must not write over the run that replaced it.
     if (deduction.assessmentRunId !== args.runId) return null;
 
     const caseData = await ctx.db.get(deduction.caseId);
@@ -243,6 +252,8 @@ export const storeAssessment = internalMutation({
  * Recomputes a case's disputable total. Kept as its own mutation so it can be
  * retried independently of the deduction write that triggered it: it reads the
  * whole case, which necessarily makes it contend with sibling assessments.
+ *
+ * Idempotent, so a caller may safely retry it.
  */
 export const refreshCaseDisputableTotal = internalMutation({
   args: { caseId: v.id("cases") },

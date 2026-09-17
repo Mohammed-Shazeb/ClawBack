@@ -35,7 +35,32 @@ import {
   parseSearchResponse,
 } from "../convex/firecrawl";
 import { buildResearchQuestion } from "../convex/questions";
+import {
+  buildLetterUserPrompt,
+  hasLetterEvidence,
+  INSUFFICIENT_EVIDENCE_MESSAGE,
+  LETTER_SCHEMA_NAME,
+  LETTER_SYSTEM_PROMPT,
+  letterJsonSchema,
+  validateLetter,
+} from "../convex/letter";
 import { bytesToBase64, verifySvixSignature } from "../convex/svix";
+import {
+  buildResponseAnalysisUserPrompt,
+  RESPONSE_ANALYSIS_SCHEMA_NAME,
+  RESPONSE_ANALYSIS_SYSTEM_PROMPT,
+  responseAnalysisJsonSchema,
+  summarizeReading,
+  validateResponseAnalysis,
+} from "../convex/response";
+import {
+  decideSendClaim,
+  duplicateSendMessage,
+  isSendableEmail,
+  sendIdempotencyKey,
+  STALE_SEND_CLAIM_MS,
+  validateSendRequest,
+} from "../convex/send";
 import { DEDUCTION_CATEGORIES } from "../convex/validators";
 
 let checks = 0;
@@ -791,6 +816,739 @@ function verifyAssessmentPrompt() {
   );
 }
 
+function verifyLetterValidation() {
+  section("Dispute letter validation");
+
+  const sources = [
+    { label: "S1", id: "src1111111111111111111111" as Id<"sources"> },
+    { label: "S2", id: "src2222222222222222222222" as Id<"sources"> },
+  ];
+
+  const base = {
+    recipient: "Property Manager",
+    subject: "Request for review of security deposit deductions",
+    body: "Based on the available housing guidance, I am requesting clarification and reimbursement for the deductions described below. The published guidance indicates that this charge may warrant further review. I am asking that the amount identified as potentially disputable be reimbursed to me. I would welcome any supporting documentation so I can review it directly. Thank you for your time and consideration of this request.",
+    supportingSourceIds: ["S1"],
+  };
+
+  const valid = validateLetter(base, { sources });
+  check("a compliant letter validates", valid !== null);
+  check("validated labels resolve to real source ids", valid?.supportingSourceIds[0] === sources[0].id);
+
+  // Structured-output contract.
+  check("a letter with no body is rejected", validateLetter({ ...base, body: "" }, { sources }) === null);
+  check("a stub body is rejected", validateLetter({ ...base, body: "Please refund me." }, { sources }) === null);
+  check("a letter with no subject is rejected", validateLetter({ ...base, subject: "" }, { sources }) === null);
+  check("a letter with no recipient is rejected", validateLetter({ ...base, recipient: "" }, { sources }) === null);
+  check(
+    "a letter with the wrong shape is rejected",
+    validateLetter({ ...base, supportingSourceIds: "S1" }, { sources }) === null
+  );
+  check("non-object output is rejected", validateLetter("not json", { sources }) === null);
+
+  // Legal safety: the enforcement behind the prompt's rules.
+  const forbidden: Array<[string, string]> = [
+    ["asserts the landlord acted illegally", "You illegally withheld my deposit."],
+    ["asserts the landlord acted unlawfully", "This was an unlawful deduction."],
+    ["asserts a broken law", "Your landlord broke the law here."],
+    ["asserts a legal violation", "This is a violation of law."],
+    ["accuses the landlord of theft", "You stole my deposit."],
+    ["accuses the landlord of stealing", "The landlord is stealing from me."],
+    ["uses the word theft", "This amounts to theft."],
+    ["promises a guaranteed outcome", "I am guaranteed to recover this amount."],
+    ["promises a win", "We will win this."],
+    ["states a success probability", "There is a 95% chance you will lose."],
+    ["threatens a lawsuit", "I will sue you over this."],
+    ["threatens small claims court", "I will file in small claims court."],
+    ["threatens the attorney general", "I will contact the attorney general."],
+    ["invents a deadline", "You must respond within 14 days."],
+    ["cites a statute", "Pursuant to Civil Code 1950.5, this is improper."],
+    ["cites a U.S. Code section", "Under 15 U.S.C. 1692 this is barred."],
+    ["cites a court case", "See Smith v. Jones on this point."],
+    ["puts a URL in the letter", "See https://example.com/guide for details."],
+  ];
+
+  for (const [name, body] of forbidden) {
+    check(
+      `rejects a letter that ${name}`,
+      validateLetter({ ...base, body: `${base.body} ${body}` }, { sources }) === null
+    );
+  }
+
+  // The filter must not be so blunt that ordinary, safe wording trips it.
+  const allowed: Array<[string, string]> = [
+    ["the phrase 'the applicable law'", "I am asking that the applicable law be applied to this review."],
+    ["the word 'legal' in a neutral sense", "I would prefer to resolve this without any legal involvement."],
+    ["the word 'lawyer'", "I am not represented by a lawyer in this matter."],
+    ["a request for review", "I am requesting that these charges be reviewed."],
+    ["a cautious inconsistency claim", "This appears inconsistent with the published guidance."],
+  ];
+
+  for (const [name, sentence] of allowed) {
+    check(
+      `accepts a letter using ${name}`,
+      validateLetter({ ...base, body: `${base.body} ${sentence}` }, { sources }) !== null
+    );
+  }
+
+  // Evidence traceability.
+  check(
+    "a letter citing no known source is rejected",
+    validateLetter({ ...base, supportingSourceIds: ["S9"] }, { sources }) === null
+  );
+  check(
+    "a letter citing no sources at all is rejected",
+    validateLetter({ ...base, supportingSourceIds: [] }, { sources }) === null
+  );
+  check(
+    "invented labels are dropped while real ones survive",
+    validateLetter({ ...base, supportingSourceIds: ["S1", "S99"] }, { sources })?.supportingSourceIds.length === 1
+  );
+  check(
+    "duplicate labels collapse to one source",
+    validateLetter({ ...base, supportingSourceIds: ["S1", "S1"] }, { sources })?.supportingSourceIds.length === 1
+  );
+  check(
+    "a letter with no available sources is rejected",
+    validateLetter(base, { sources: [] }) === null
+  );
+
+  // Length clamps keep a runaway model from writing an unbounded document.
+  const long = validateLetter(
+    { ...base, subject: "s".repeat(1000), recipient: "r".repeat(1000), body: `${base.body}${"x".repeat(30_000)}` },
+    { sources }
+  );
+  check("an over-long subject is clamped", (long?.subject.length ?? 0) <= 300);
+  check("an over-long recipient is clamped", (long?.recipient.length ?? 0) <= 200);
+  check("an over-long body is clamped", (long?.body.length ?? 0) <= 20_000);
+
+  // The JSON Schema handed to the provider must match the Zod contract.
+  check("the letter schema name is stable", LETTER_SCHEMA_NAME === "dispute_letter");
+  check("the provider schema has no $schema key", !("$schema" in letterJsonSchema));
+  check(
+    "the provider schema requires every field",
+    Array.isArray(letterJsonSchema.required) &&
+      (letterJsonSchema.required as string[]).includes("supportingSourceIds")
+  );
+
+  // The prompt must carry the same prohibitions the validator enforces.
+  for (const [name, pattern] of [
+    ["inventing facts or citations", /never invent/i],
+    ["asserting illegality", /never state that the landlord broke the law/i],
+    ["claiming a guaranteed outcome", /never claim the renter will win/i],
+    ["threatening legal action", /never threaten legal action/i],
+    ["inventing a deadline", /never invent a deadline/i],
+    ["leaving a label or URL in the body", /never write a source label, URL, or database id/i],
+    ["using only provided figures", /do not add, total, or estimate any amount/i],
+    ["attributing claims to a passage", /attributed to a provided source passage/i],
+  ] as Array<[string, RegExp]>) {
+    check(`the letter prompt forbids ${name}`, pattern.test(LETTER_SYSTEM_PROMPT));
+  }
+
+  check(
+    "the letter prompt requires a professional, non-lawyer tone",
+    /must not read as if written by a lawyer/i.test(LETTER_SYSTEM_PROMPT)
+  );
+  check(
+    "the letter prompt sets out the required letter structure",
+    /professional opening/i.test(LETTER_SYSTEM_PROMPT) && /professional closing/i.test(LETTER_SYSTEM_PROMPT)
+  );
+  check(
+    "the letter prompt bans markdown in the body",
+    /do not use markdown formatting/i.test(LETTER_SYSTEM_PROMPT)
+  );
+}
+
+function verifyLetterPrompt() {
+  section("Dispute letter prompt");
+
+  const prompt = buildLetterUserPrompt({
+    jurisdiction: "California",
+    depositAmount: 1500,
+    totalDeductions: 1150,
+    potentiallyDisputableAmount: 500,
+    deductions: [
+      {
+        description: "Painting",
+        amount: 300,
+        category: "ORDINARY_WEAR",
+        assessment: "POTENTIALLY_DISPUTABLE",
+        assessmentReason: "ordinary wear",
+        potentiallyDisputableAmount: 300,
+        missingInformation: [],
+        sourceLabels: ["S1", "S2"],
+      },
+      {
+        description: "Broken cabinet",
+        amount: 400,
+        category: "TENANT_DAMAGE",
+        assessment: "LIKELY_VALID",
+        assessmentReason: "tenant damage",
+        potentiallyDisputableAmount: 0,
+        missingInformation: [],
+        sourceLabels: ["S1"],
+      },
+      {
+        description: "Administrative fee",
+        amount: 100,
+        category: "FEE",
+        assessment: "NEEDS_MORE_INFORMATION",
+        assessmentReason: "unclear",
+        potentiallyDisputableAmount: 0,
+        missingInformation: ["Whether the lease allows it"],
+        sourceLabels: [],
+      },
+    ],
+    sources: [
+      {
+        label: "S1",
+        title: "Security Deposits",
+        authority: "California Department of Real Estate",
+        jurisdiction: "California",
+        relevantText: "Deductions must be itemized in writing.",
+      },
+      {
+        label: "S2",
+        title: "Security Deposit Self-Help",
+        authority: "California Courts",
+        jurisdiction: "California",
+      },
+    ],
+  });
+
+  check("the prompt carries the jurisdiction", prompt.includes("California"));
+  check("the prompt carries the deposit", prompt.includes("$1500.00"));
+  check("the prompt carries the total deductions", prompt.includes("$1150.00"));
+  check(
+    "the prompt carries the precomputed disputable amount",
+    prompt.includes("Total identified as potentially disputable: $500.00")
+  );
+  check("the prompt names every deduction", prompt.includes('"Painting"') && prompt.includes('"Broken cabinet"'));
+  check("the prompt carries each assessment", prompt.includes("assessment: LIKELY_VALID"));
+  check("the prompt carries the capped disputable amount", prompt.includes("potentially disputable amount: $300.00"));
+  check("the prompt ties a deduction to its sources", prompt.includes("supported by sources: S1, S2"));
+  check(
+    "the prompt says when a deduction has no supporting source",
+    prompt.includes("supported by sources: none")
+  );
+  check(
+    "the prompt surfaces what information is missing",
+    prompt.includes("Whether the lease allows it")
+  );
+  check("the prompt labels every source", prompt.includes("[S1]") && prompt.includes("[S2]"));
+  check("the prompt quotes a passage", prompt.includes('Passage: "Deductions must be itemized in writing."'));
+  check(
+    "a source with no passage says so instead of staying silent",
+    prompt.includes("the provider returned no passage for this source")
+  );
+  check(
+    "the prompt never leaks a database id",
+    !/[a-z0-9]{32}/.test(prompt)
+  );
+  check(
+    "the prompt asks for the letter described in the instructions",
+    prompt.includes("Draft the dispute letter described in your instructions")
+  );
+  check(
+    "the prompt leaves no dangling nulls from an unassessed deduction",
+    !prompt.includes("null")
+  );
+}
+
+function verifyLetterEvidenceGate() {
+  section("Dispute letter evidence gate");
+
+  const withSource = "src1111111111111111111111" as Id<"sources">;
+
+  check("a case with no deductions cannot draft a letter", !hasLetterEvidence([]));
+  check(
+    "a disputable deduction with a source and an amount qualifies",
+    hasLetterEvidence([
+      { assessment: "POTENTIALLY_DISPUTABLE", assessmentSourceIds: [withSource], potentiallyDisputableAmount: 300 },
+    ])
+  );
+  check(
+    "a disputable deduction with no source does not qualify",
+    !hasLetterEvidence([
+      { assessment: "POTENTIALLY_DISPUTABLE", assessmentSourceIds: [], potentiallyDisputableAmount: 300 },
+    ])
+  );
+  check(
+    "a disputable deduction with a zero amount does not qualify",
+    !hasLetterEvidence([
+      { assessment: "POTENTIALLY_DISPUTABLE", assessmentSourceIds: [withSource], potentiallyDisputableAmount: 0 },
+    ])
+  );
+  check(
+    "a LIKELY_VALID deduction does not qualify",
+    !hasLetterEvidence([
+      { assessment: "LIKELY_VALID", assessmentSourceIds: [withSource], potentiallyDisputableAmount: 0 },
+    ])
+  );
+  check(
+    "a NEEDS_MORE_INFORMATION deduction does not qualify on its own",
+    !hasLetterEvidence([
+      { assessment: "NEEDS_MORE_INFORMATION", assessmentSourceIds: [], potentiallyDisputableAmount: 0 },
+    ])
+  );
+  check(
+    "one qualifying deduction is enough",
+    hasLetterEvidence([
+      { assessment: "LIKELY_VALID", assessmentSourceIds: [withSource], potentiallyDisputableAmount: 0 },
+      { assessment: "POTENTIALLY_DISPUTABLE", assessmentSourceIds: [withSource], potentiallyDisputableAmount: 200 },
+    ])
+  );
+  check(
+    "the refusal explains what is actually missing",
+    /potentially disputable/i.test(INSUFFICIENT_EVIDENCE_MESSAGE) &&
+      /official source/i.test(INSUFFICIENT_EVIDENCE_MESSAGE)
+  );
+}
+
+/**
+ * The send contract: what may be sent, and what counts as the same send.
+ *
+ * These rules are the ones that must hold before a landlord receives anything,
+ * so they are checked here rather than only through a live deployment.
+ */
+function verifySendContract() {
+  section("Send contract — addressing");
+
+  check("a plain address is sendable", isSendableEmail("landlord@example.com"));
+  check("a subdomain address is sendable", isSendableEmail("deposits@mail.landlord.co.uk"));
+  check("surrounding whitespace is tolerated", isSendableEmail("  landlord@example.com  "));
+  check("an empty string is not sendable", !isSendableEmail(""));
+  check("undefined is not sendable", !isSendableEmail(undefined));
+  check("an address with no domain is not sendable", !isSendableEmail("landlord@localhost"));
+  check("an address with no @ is not sendable", !isSendableEmail("landlord.example.com"));
+  check("an address containing a space is not sendable", !isSendableEmail("land lord@example.com"));
+  check("an address with two @ is not sendable", !isSendableEmail("a@b@example.com"));
+  check(
+    "an over-long address is not sendable",
+    !isSendableEmail(`${"a".repeat(320)}@example.com`)
+  );
+
+  section("Send contract — preconditions");
+
+  const approved = {
+    status: "APPROVED" as const,
+    pipelineStatus: "READY" as const,
+    subject: "Dispute of deposit deductions",
+    body: "I dispute the deductions set out in your statement.",
+  };
+  const addressed = { inboxId: "case-abc@agentmail.to", landlordEmail: "landlord@example.com" };
+
+  check(
+    "an approved, addressed, ready letter may be sent",
+    validateSendRequest({ letter: approved, ...addressed }) === null
+  );
+
+  check(
+    "a missing letter is refused",
+    validateSendRequest({ letter: null, ...addressed })?.code === "NO_LETTER"
+  );
+  check(
+    "an already-sent letter is refused",
+    validateSendRequest({ letter: { ...approved, status: "SENT" }, ...addressed })?.code ===
+      "ALREADY_SENT"
+  );
+  check(
+    "a draft is refused",
+    validateSendRequest({ letter: { ...approved, status: "DRAFT" }, ...addressed })?.code ===
+      "NOT_APPROVED"
+  );
+  check(
+    "a letter awaiting approval is refused",
+    validateSendRequest({
+      letter: { ...approved, status: "AWAITING_APPROVAL" },
+      ...addressed,
+    })?.code === "NOT_APPROVED"
+  );
+  check(
+    "a letter still generating is refused",
+    validateSendRequest({
+      letter: { ...approved, pipelineStatus: "GENERATING" },
+      ...addressed,
+    })?.code === "NOT_READY"
+  );
+  check(
+    "an empty subject is refused",
+    validateSendRequest({ letter: { ...approved, subject: "   " }, ...addressed })?.code ===
+      "NO_SUBJECT"
+  );
+  check(
+    "an empty body is refused",
+    validateSendRequest({ letter: { ...approved, body: "\n\t " }, ...addressed })?.code ===
+      "NO_BODY"
+  );
+  check(
+    "a case with no sending address is refused",
+    validateSendRequest({ letter: approved, ...addressed, inboxId: undefined })?.code ===
+      "NO_INBOX"
+  );
+  check(
+    "a missing landlord address is refused",
+    validateSendRequest({ letter: approved, ...addressed, landlordEmail: undefined })?.code ===
+      "NO_RECIPIENT"
+  );
+  check(
+    "a malformed landlord address is refused",
+    validateSendRequest({ letter: approved, ...addressed, landlordEmail: "not-an-address" })
+      ?.code === "NO_RECIPIENT"
+  );
+  check(
+    "the refusal for an unapproved letter tells the renter what to do",
+    /approve/i.test(validateSendRequest({ letter: { ...approved, status: "DRAFT" }, ...addressed })!.message)
+  );
+
+  section("Send contract — idempotency");
+
+  const letterId = "jd7abcdefghijklmnop";
+  check(
+    "the key is deterministic for one document revision",
+    sendIdempotencyKey(letterId, 3) === sendIdempotencyKey(letterId, 3)
+  );
+  check(
+    "the key names the letter and the revision",
+    sendIdempotencyKey(letterId, 3) === `send:${letterId}:v3`
+  );
+  check(
+    "a revised document gets a different key",
+    sendIdempotencyKey(letterId, 3) !== sendIdempotencyKey(letterId, 4)
+  );
+  check(
+    "a different letter gets a different key",
+    sendIdempotencyKey(letterId, 3) !== sendIdempotencyKey(`${letterId}x`, 3)
+  );
+
+  check(
+    "a delivered document refuses a second send",
+    decideSendClaim({ sendStatus: "SENT", ageMs: 0 }) === "REFUSE_ALREADY_SENT"
+  );
+  check(
+    "a fresh in-flight claim refuses a concurrent send",
+    decideSendClaim({ sendStatus: "SENDING", ageMs: 1_000 }) === "REFUSE_IN_FLIGHT"
+  );
+  check(
+    "a failed send may be retried on the same record",
+    decideSendClaim({ sendStatus: "FAILED", ageMs: 60_000 }) === "REUSE"
+  );
+  check(
+    "a claim exactly at the staleness boundary is still held",
+    decideSendClaim({ sendStatus: "SENDING", ageMs: STALE_SEND_CLAIM_MS - 1 }) ===
+      "REFUSE_IN_FLIGHT"
+  );
+  check(
+    "a claim at the staleness boundary is taken over",
+    decideSendClaim({ sendStatus: "SENDING", ageMs: STALE_SEND_CLAIM_MS }) === "REUSE"
+  );
+  check(
+    "a long-abandoned claim is taken over rather than blocking the case forever",
+    decideSendClaim({ sendStatus: "SENDING", ageMs: 24 * 60 * 60 * 1000 }) === "REUSE"
+  );
+  check(
+    "a delivered document is never taken over, however old",
+    decideSendClaim({ sendStatus: "SENT", ageMs: 365 * 24 * 60 * 60 * 1000 }) ===
+      "REFUSE_ALREADY_SENT"
+  );
+  check(
+    "the duplicate refusal says the landlord already has it",
+    /already been sent to the landlord/i.test(duplicateSendMessage("REFUSE_ALREADY_SENT"))
+  );
+  check(
+    "the in-flight refusal says the send is under way",
+    /already being sent/i.test(duplicateSendMessage("REFUSE_IN_FLIGHT"))
+  );
+}
+
+/** A well-formed reading of a landlord's reply, used as the valid baseline. */
+const validReading = {
+  summary:
+    "The landlord replies that the carpet was replaced before the tenancy and offers to return part of the deposit.",
+  acceptsDispute: false,
+  rejectsDispute: true,
+  requestsMoreInformation: false,
+  offersPartialReimbursement: true,
+  offeredAmount: 400,
+  providesNewEvidence: true,
+  newEvidenceSummary: "An invoice for carpet replacement dated before the tenancy began.",
+  followUpQuestions: [],
+  missingInformation: [],
+};
+
+function verifyResponseAnalysis() {
+  section("Landlord response analysis — validation");
+
+  const stored = validateResponseAnalysis(validReading, { depositAmount: 1500 });
+  check("a well-formed reading is accepted", stored !== null);
+  check("the summary survives validation", stored?.summary.startsWith("The landlord replies") === true);
+  check("the named figure is kept", stored?.offeredAmount === 400);
+  check("the flags are kept as given", stored?.rejectsDispute === true);
+  check("new evidence material is kept", /invoice/i.test(stored?.newEvidenceSummary ?? ""));
+
+  check(
+    "a reply that is not an object is rejected",
+    validateResponseAnalysis("not an object", { depositAmount: 1500 }) === null
+  );
+  check(
+    "a reading missing a required field is rejected",
+    validateResponseAnalysis({ ...validReading, summary: undefined }, { depositAmount: 1500 }) ===
+      null
+  );
+  check(
+    "a reading with the wrong field type is rejected",
+    validateResponseAnalysis({ ...validReading, acceptsDispute: "yes" }, { depositAmount: 1500 }) ===
+      null
+  );
+  check(
+    "a reply that both accepts and refuses the dispute is rejected",
+    validateResponseAnalysis(
+      { ...validReading, acceptsDispute: true, rejectsDispute: true },
+      { depositAmount: 1500 }
+    ) === null
+  );
+  check(
+    "an empty summary is rejected",
+    validateResponseAnalysis({ ...validReading, summary: "   " }, { depositAmount: 1500 }) === null
+  );
+  check(
+    "a summary shorter than a sentence is rejected",
+    validateResponseAnalysis({ ...validReading, summary: "Rejected." }, { depositAmount: 1500 }) ===
+      null
+  );
+  check(
+    "a negative figure is rejected",
+    validateResponseAnalysis({ ...validReading, offeredAmount: -1 }, { depositAmount: 1500 }) ===
+      null
+  );
+  check(
+    "a figure larger than the deposit held is rejected as fabricated",
+    validateResponseAnalysis({ ...validReading, offeredAmount: 4_000 }, { depositAmount: 1500 }) ===
+      null
+  );
+  check(
+    "a null figure is accepted when the reply names none",
+    validateResponseAnalysis(
+      { ...validReading, offersPartialReimbursement: false, offeredAmount: null },
+      { depositAmount: 1500 }
+    ) !== null
+  );
+  check(
+    "claiming new evidence with nothing to describe is rejected",
+    validateResponseAnalysis(
+      { ...validReading, providesNewEvidence: true, newEvidenceSummary: null },
+      { depositAmount: 1500 }
+    ) === null
+  );
+  check(
+    "claiming new evidence with a blank description is rejected",
+    validateResponseAnalysis(
+      { ...validReading, providesNewEvidence: true, newEvidenceSummary: "  " },
+      { depositAmount: 1500 }
+    ) === null
+  );
+  check(
+    "an empty list is accepted",
+    validateResponseAnalysis(
+      { ...validReading, followUpQuestions: [], missingInformation: [] },
+      { depositAmount: 1500 }
+    ) !== null
+  );
+  check(
+    "blank list items are dropped",
+    validateResponseAnalysis(
+      { ...validReading, followUpQuestions: ["", "  ", "Send the invoice."] },
+      { depositAmount: 1500 }
+    )?.followUpQuestions.length === 1
+  );
+  check(
+    "a runaway list is clamped",
+    validateResponseAnalysis(
+      { ...validReading, followUpQuestions: Array.from({ length: 50 }, (_, i) => `item ${i}`) },
+      { depositAmount: 1500 }
+    )?.followUpQuestions.length === 20
+  );
+  check(
+    "an over-long list item is truncated",
+    validateResponseAnalysis(
+      { ...validReading, followUpQuestions: ["x".repeat(900)] },
+      { depositAmount: 1500 }
+    )?.followUpQuestions[0].length === 500
+  );
+
+  section("Landlord response analysis — no legal conclusions");
+
+  const forbidden: Array<[string, string]> = [
+    ["the deduction is illegal", "the deduction is illegal"],
+    ["the landlord broke the law", "The landlord broke the law."],
+    ["the renter will win", "The renter will win this."],
+    ["a guarantee", "We guarantee a full refund."],
+    ["a legal entitlement", "You are legally entitled to the deposit."],
+    ["a legal obligation phrased with a subject", "The landlord is legally obliged to return it."],
+    ["an absence of legal obligation", "The landlord has no legal obligation here."],
+    ["advice to sue", "We recommend that you should sue the landlord."],
+    ["a confidence percentage", "There is a 90% chance of recovery."],
+  ];
+
+  for (const [name, summary] of forbidden) {
+    check(
+      `${name} is rejected`,
+      validateResponseAnalysis({ ...validReading, summary }, { depositAmount: 1500 }) === null
+    );
+  }
+
+  check(
+    "a forbidden phrase in the new-evidence note is rejected",
+    validateResponseAnalysis(
+      { ...validReading, newEvidenceSummary: "An invoice proving the deduction was unlawful." },
+      { depositAmount: 1500 }
+    ) === null
+  );
+  check(
+    "a forbidden phrase in a follow-up question is rejected",
+    validateResponseAnalysis(
+      { ...validReading, followUpQuestions: ["Are you legally entitled to withhold this?"] },
+      { depositAmount: 1500 }
+    ) === null
+  );
+  check(
+    "a neutral mention of the law is still allowed",
+    validateResponseAnalysis(
+      { ...validReading, summary: "The landlord refers to the tenancy agreement and the local law." },
+      { depositAmount: 1500 }
+    ) !== null
+  );
+
+  section("Landlord response analysis — prompt and schema");
+
+  check("the schema is named for the task", RESPONSE_ANALYSIS_SCHEMA_NAME === "landlord_response_analysis");
+  check(
+    "the prompt tells the model to transcribe rather than evaluate",
+    /transcribing the message, not evaluating it/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
+  );
+  check(
+    "the prompt forbids legal conclusions",
+    /Never state or imply a legal conclusion/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
+  );
+  check(
+    "the prompt requires flags to reflect explicit content only",
+    /Flags reflect explicit content only/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
+  );
+  check(
+    "the prompt forbids estimating a figure",
+    /Never estimate one/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
+  );
+
+  const properties = (responseAnalysisJsonSchema.properties ?? {}) as Record<string, unknown>;
+  const required = (responseAnalysisJsonSchema.required ?? []) as string[];
+  const expectedKeys = Object.keys(validReading);
+
+  check("the model schema is an object", responseAnalysisJsonSchema.type === "object");
+  check("the model schema omits $schema", !("$schema" in responseAnalysisJsonSchema));
+  check(
+    "the model schema covers every field the validator expects",
+    expectedKeys.every((key) => key in properties)
+  );
+  check(
+    "every field is required, so the model cannot omit one",
+    expectedKeys.every((key) => required.includes(key))
+  );
+  check(
+    "the optional figure is nullable rather than required-non-null",
+    JSON.stringify(properties.offeredAmount).includes("null")
+  );
+
+  const prompt = buildResponseAnalysisUserPrompt({
+    context: {
+      jurisdiction: "Ontario, Canada",
+      depositAmount: 1500,
+      totalDeductions: 850,
+      potentiallyDisputableAmount: 850,
+      letterSubject: "Dispute of deposit deductions",
+    },
+    message: {
+      sender: "landlord@example.com",
+      subject: "Re: Dispute of deposit deductions",
+      body: "The carpet was replaced before you moved in.",
+    },
+  });
+
+  check("the prompt carries the case figures", prompt.includes("$850.00"));
+  check("the prompt carries the deposit", prompt.includes("$1500.00"));
+  check("the prompt names the letter being answered", prompt.includes("Dispute of deposit deductions"));
+  check("the prompt includes the reply body verbatim", prompt.includes("The carpet was replaced"));
+  check("the prompt restates the transcript-only instruction", /Use only what the reply contains/.test(prompt));
+
+  section("Landlord response analysis — summary line");
+
+  check(
+    "a rejection reads as a rejection",
+    summarizeReading({
+      summary: "x",
+      acceptsDispute: false,
+      rejectsDispute: true,
+      requestsMoreInformation: false,
+      offersPartialReimbursement: false,
+      providesNewEvidence: false,
+      followUpQuestions: [],
+      missingInformation: [],
+    }) === "rejects the dispute"
+  );
+  check(
+    "an offer of money names the figure",
+    summarizeReading({
+      summary: "x",
+      acceptsDispute: false,
+      rejectsDispute: false,
+      requestsMoreInformation: false,
+      offersPartialReimbursement: true,
+      offeredAmount: 400,
+      providesNewEvidence: false,
+      followUpQuestions: [],
+      missingInformation: [],
+    }) === "offers $400.00"
+  );
+  check(
+    "an offer with no figure does not invent one",
+    summarizeReading({
+      summary: "x",
+      acceptsDispute: false,
+      rejectsDispute: false,
+      requestsMoreInformation: false,
+      offersPartialReimbursement: true,
+      providesNewEvidence: false,
+      followUpQuestions: [],
+      missingInformation: [],
+    }) === "offers to pay"
+  );
+  check(
+    "several positions are combined",
+    summarizeReading({
+      summary: "x",
+      acceptsDispute: false,
+      rejectsDispute: true,
+      requestsMoreInformation: true,
+      offersPartialReimbursement: false,
+      providesNewEvidence: true,
+      followUpQuestions: [],
+      missingInformation: [],
+    }) === "rejects the dispute, asks for more information, provides new material"
+  );
+  check(
+    "an empty reading says so rather than guessing",
+    summarizeReading({
+      summary: "x",
+      acceptsDispute: false,
+      rejectsDispute: false,
+      requestsMoreInformation: false,
+      offersPartialReimbursement: false,
+      providesNewEvidence: false,
+      followUpQuestions: [],
+      missingInformation: [],
+    }) === "no clear position stated"
+  );
+}
+
 async function main() {
   await verifySignatures();
   verifyFailureMessages();
@@ -802,6 +1560,11 @@ async function main() {
   verifyCaseTotals();
   verifyNoLegalConclusions();
   verifyAssessmentPrompt();
+  verifyLetterValidation();
+  verifyLetterPrompt();
+  verifyLetterEvidenceGate();
+  verifySendContract();
+  verifyResponseAnalysis();
 
   console.log(`\n${checks - failures}/${checks} checks passed`);
 

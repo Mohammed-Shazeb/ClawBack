@@ -17,6 +17,11 @@
     "convex/svix.ts",
     "convex/firecrawl.ts",
     "convex/questions.ts",
-    "convex/assessment.ts"
+    "convex/assessment.ts",
+    "convex/letter.ts",
+    "convex/response.ts",
+    "convex/send.ts",
+    "convex/outbound.ts",
+    "convex/responses.ts"
   ]
 }

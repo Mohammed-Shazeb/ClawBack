@@ -45,6 +45,14 @@ const messageSchema = z.object({
   extracted_text: z.string().nullish(),
   preview: z.string().nullish(),
   labels: z.array(z.string()).nullish(),
+  /**
+   * Reply threading. Providers expose this either as first-class fields or only
+   * inside the raw headers, so both are accepted; the headers are matched
+   * case-insensitively.
+   */
+  in_reply_to: z.string().nullish(),
+  references: z.union([z.string(), z.array(z.string())]).nullish(),
+  headers: z.record(z.string(), z.union([z.string(), z.number()])).nullish(),
   attachments: z
     .array(
       z.object({
@@ -57,6 +65,14 @@ const messageSchema = z.object({
     )
     .nullish(),
 });
+
+/** What a send returns: the stored message, with its thread. */
+export type SentMessage = {
+  externalMessageId: string;
+  threadId?: string;
+  recipient?: string;
+  subject: string;
+};
 
 export const agentMailWebhookEventSchema = z.object({
   event_type: z.string(),
@@ -72,6 +88,16 @@ export type InboundMessage = {
   subject: string;
   body: string;
   receivedAt: number;
+  /**
+   * The provider's thread id. Carried through because it is the reliable way to
+   * tie a landlord's reply to the case that sent the dispute — subject lines
+   * are user-controlled and are only ever a fallback.
+   */
+  threadId?: string;
+  /** The message this one replies to, when the provider supplies it. */
+  inReplyTo?: string;
+  /** The conversation's earlier message ids, when the provider supplies them. */
+  references: string[];
   attachments: EmailAttachment[];
 };
 
@@ -112,6 +138,63 @@ export async function createCaseInbox({
 }
 
 /**
+ * Sends a message from the case's inbox to the landlord.
+ *
+ * `client_id` is not available on this endpoint, so idempotency is enforced by
+ * the caller: the send pipeline stores a deterministic key for the exact
+ * document before calling this, and refuses to call it twice for the same one.
+ */
+export async function sendCaseMessage({
+  inboxId,
+  to,
+  subject,
+  text,
+  threadId,
+  inReplyTo,
+  references,
+}: {
+  inboxId: string;
+  to: string;
+  subject: string;
+  text: string;
+  /** Continue an existing conversation rather than starting a new one. */
+  threadId?: string;
+  /** The message being replied to, so the provider threads it correctly. */
+  inReplyTo?: string;
+  references?: string[];
+}): Promise<SentMessage> {
+  const headers: Record<string, string> = {};
+  if (inReplyTo) headers["In-Reply-To"] = inReplyTo;
+  if (references && references.length > 0) headers["References"] = references.join(" ");
+
+  const response = await agentMailRequest(
+    `/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
+    {
+      method: "POST",
+      body: {
+        to,
+        subject,
+        text,
+        ...(threadId ? { thread_id: threadId } : {}),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      },
+    }
+  );
+
+  const parsed = messageSchema.safeParse(response);
+  if (!parsed.success) {
+    throw new Error("AgentMail accepted the message but returned an unexpected response.");
+  }
+
+  return {
+    externalMessageId: parsed.data.message_id,
+    threadId: parsed.data.thread_id ?? undefined,
+    recipient: firstAddress(parsed.data.to),
+    subject: parsed.data.subject?.trim() ?? subject,
+  };
+}
+
+/**
  * Reads a message's text back from AgentMail. Only needed when a delivery was
  * too large for the webhook payload, which drops the body and keeps metadata.
  */
@@ -148,6 +231,9 @@ export function normalizeInboundMessage(
     // be exactly where a forwarded statement lives.
     body: (message.text ?? message.extracted_text ?? message.preview ?? "").trim(),
     receivedAt,
+    threadId: message.thread_id ?? undefined,
+    inReplyTo: message.in_reply_to ?? headerValue(message.headers, "in-reply-to"),
+    references: parseReferences(message.references ?? headerValue(message.headers, "references")),
     attachments: (message.attachments ?? []).map((attachment) => ({
       attachmentId: attachment.attachment_id ?? undefined,
       filename: attachment.filename ?? undefined,
@@ -156,6 +242,35 @@ export function normalizeInboundMessage(
       inline: attachment.inline ?? undefined,
     })),
   };
+}
+
+/** Case-insensitive header lookup, since providers vary in casing. */
+function headerValue(
+  headers: Record<string, string | number> | null | undefined,
+  name: string
+): string | undefined {
+  if (!headers) return undefined;
+
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) return String(value);
+  }
+
+  return undefined;
+}
+
+/**
+ * Normalizes a References header or field into a list of message ids. The header
+ * form is a whitespace-separated list; the field form may already be an array.
+ */
+function parseReferences(
+  value: string | string[] | null | undefined
+): string[] {
+  if (!value) return [];
+
+  const parts = Array.isArray(value) ? value : value.split(/\s+/);
+
+  return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
 /** Deterministic per-case local part, derived from the case id. */

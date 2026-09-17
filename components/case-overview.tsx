@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 import { useQuery } from "convex/react";
-import { ArrowLeft, Clock3, FileText, Mail } from "lucide-react";
+import { ArrowLeft, Clock3 } from "lucide-react";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { formatDateTime } from "@/lib/format";
 import { AppShell } from "./app-shell";
+import { CaseCommunication } from "./case-communication";
 import { CaseDeductions } from "./case-deductions";
 import { CaseEmailAddress } from "./case-email-address";
 import { CaseFinances } from "./case-finances";
+import { CaseLetter } from "./case-letter";
 import { CaseStatement } from "./case-statement";
 import { useDemoUser } from "./demo-user";
 
@@ -83,6 +85,13 @@ export function CaseOverview({ caseId }: { caseId: string }) {
 
             <div className="mt-8 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
               <div className="space-y-6">
+                <CaseLetter
+                  caseId={caseId}
+                  userId={userId as Id<"users">}
+                  potentiallyDisputableAmount={caseData.potentiallyDisputableAmount}
+                  landlordEmail={caseData.landlordEmail}
+                />
+                <CaseCommunication caseId={caseId} userId={userId as Id<"users">} />
                 <CaseDeductions
                   userId={userId as Id<"users">}
                   deductions={deductions}
@@ -133,19 +142,6 @@ export function CaseOverview({ caseId }: { caseId: string }) {
                     </div>
                   )}
                 </section>
-
-                <div className="space-y-3">
-                  <FutureBlock
-                    icon={<FileText size={17} />}
-                    title="Dispute letter"
-                    text="Drafting the dispute letter from the assessed deductions comes next."
-                  />
-                  <FutureBlock
-                    icon={<Mail size={17} />}
-                    title="Response"
-                    text="Landlord communication will appear here."
-                  />
-                </div>
               </div>
             </div>
           </>
@@ -174,25 +170,5 @@ function StatusPill({ status, isAnalyzing }: { status: string; isAnalyzing: bool
       ) : null}
       {status}
     </span>
-  );
-}
-
-function FutureBlock({
-  icon,
-  title,
-  text,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  text: string;
-}) {
-  return (
-    <div className="flex gap-3 rounded-xl border border-dashed border-[#d9dfe1] bg-[#fbfcfc] p-4">
-      <span className="text-[#82908a]">{icon}</span>
-      <div>
-        <h3 className="text-sm font-semibold text-[#35414b]">{title}</h3>
-        <p className="mt-1 text-xs leading-5 text-[#89929b]">{text}</p>
-      </div>
-    </div>
   );
 }
