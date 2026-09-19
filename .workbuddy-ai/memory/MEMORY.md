@@ -157,3 +157,18 @@ without it).
     `evidence`, `letters`, `emails`, `timelineEvents`; deleting the case row alone orphans
     them. A user parents `authAccounts`, `authSessions`, and — via `sessionId`, not
     `userId` — `authRefreshTokens`.
+29. **A provider response shape must be mirrored exactly by the mock, and parsed by
+    its own schema.** `POST /inboxes/{id}/messages/send` returns **only**
+    `{"message_id","thread_id"}` — it is *not* a message object. Parsing it with
+    `messageSchema` (which requires `inbox_id`) failed on **every** send, *after*
+    the provider had already delivered. Result: the landlord received the letter
+    twice while the letter stayed `APPROVED` and the UI claimed failure, and the
+    retry opened a **second thread** because the first thread id was never
+    recorded. `agentmail.ts` now has a separate `sentMessageSchema`, and
+    `mock-providers.mjs` returns the minimal real shape. **This is the second
+    time a mock hid a live defect** (rule 15 was the first) — when a mocked suite
+    passes against a real provider failure, suspect the mock's fixture shape.
+30. **A parse failure must say what did not match** (rule 25 again). Both
+    `agentmail.ts` sites now include `describeParseFailure()` with the Zod issues,
+    so "unexpected response" names the offending field instead of looking like a
+    transient network error.
