@@ -3,6 +3,7 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { agentMailWebhookEventSchema, normalizeInboundMessage } from "./agentmail";
+import { auth } from "./auth";
 import { verifySvixSignature } from "./svix";
 
 /**
@@ -14,6 +15,10 @@ import { verifySvixSignature } from "./svix";
  */
 
 const http = httpRouter();
+
+// Serves /api/auth/* on the site host: the sign-in start, the callback, and the
+// token refresh the client needs to keep a session alive.
+auth.addHttpRoutes(http);
 
 const PATH = "/agentmail/webhook";
 
