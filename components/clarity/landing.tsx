@@ -51,6 +51,18 @@ export function LandingHero() {
             See a dispute letter
           </Link>
         </div>
+
+        {isSignedIn ? null : (
+          <p className="mt-6 text-[13.5px] text-white/50">
+            Already have an account?{" "}
+            <Link
+              href="/signin"
+              className="font-medium text-white/85 underline-offset-4 transition-colors hover:text-white hover:underline"
+            >
+              Log in
+            </Link>
+          </p>
+        )}
       </div>
     </section>
   );
