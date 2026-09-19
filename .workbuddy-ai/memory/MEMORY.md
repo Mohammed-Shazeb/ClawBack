@@ -172,3 +172,16 @@ without it).
     `agentmail.ts` sites now include `describeParseFailure()` with the Zod issues,
     so "unexpected response" names the offending field instead of looking like a
     transient network error.
+31. **"SENT" means handed to the provider, not delivered — the app has no delivery
+    feedback at all.** `convex/http.ts` returns `{ignored:true}` for every webhook
+    event whose `event_type` is not `message.received`, so bounce / delivery /
+    complaint events are silently dropped; and a bounce goes to the SES envelope
+    sender, not the case inbox, so it would not appear in the inbox listing either.
+    AgentMail's message detail exposes no delivery status (only `labels:["sent"]`).
+    Treat "the landlord received it" as unverifiable; say so rather than implying
+    delivery.
+32. **`agentmail.to` publishes `DMARC p=reject` and has NO SPF record**, so
+    authentication rests entirely on aligned DKIM. Mail from a case inbox can be
+    rejected or spam-filed by strict receivers — observed: two deliveries to a
+    Google Workspace college domain (`jecrc.ac.in`) were never seen by the
+    recipient. Suspect this first when a send is accepted but not received.
