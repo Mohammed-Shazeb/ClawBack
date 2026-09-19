@@ -19,3 +19,15 @@ export function useMutation(fn) {
     return null;
   };
 }
+
+/**
+ * Actions are recorded separately from mutations so a test can tell a
+ * server-side call (which may hit a provider) from a plain database write.
+ */
+export function useAction(fn) {
+  const name = fn && fn.__name;
+  return async (...args) => {
+    (globalThis.__ACTIONS__ ??= []).push({ name, args });
+    return null;
+  };
+}

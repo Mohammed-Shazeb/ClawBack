@@ -48,18 +48,46 @@ const firecrawlResults = [
 // statement genuinely produces a different set of deductions and the
 // "a revision replaces the previous deductions" assertion actually tests the
 // pipeline instead of a constant.
+//
+// The categories the app will accept, mirrored from `convex/validators.ts`.
+// This is a contract, not a convenience: the app validates every provider
+// response against its Zod schema before persisting it, so a category outside
+// this list makes the *whole statement* fail to parse. The mock previously
+// fell back to "OTHER", which is not in the enum — so any statement with an
+// unrecognised line (for example a plain "Cleaning: $100") was rejected by the
+// app with "The statement could not be read as structured data." The app was
+// right and the mock was wrong. `assertCategory` below keeps the two in step.
+const DEDUCTION_CATEGORIES = ["ORDINARY_WEAR", "TENANT_DAMAGE", "FEE", "UNKNOWN"];
+
+// Ordered: the first match wins, so the specific patterns come first. These
+// mirror the definitions the real model is given in EXTRACTION_SYSTEM_PROMPT —
+// repainting after a normal tenancy and carpet cleaning are ordinary wear, a
+// broken cabinet is tenant damage, and a charge that is not payment for repair
+// or cleaning work is a fee.
 const KNOWN_CATEGORIES = [
-  [/paint/i, "ORDINARY_WEAR"],
-  [/carpet/i, "ORDINARY_WEAR"],
-  [/cabinet|door|wall|blind/i, "TENANT_DAMAGE"],
-  [/fee|administrative|cleaning charge/i, "FEE"],
+  [/fee|administrative|processing|listing/i, "FEE"],
+  [/cabinet|door|wall|blind|burn|pet damage|hole/i, "TENANT_DAMAGE"],
+  [/paint|carpet|clean|wear|scuff|worn|finish/i, "ORDINARY_WEAR"],
 ];
+
+function assertCategory(category, description) {
+  if (!DEDUCTION_CATEGORIES.includes(category)) {
+    throw new Error(
+      `mock produced the unknown deduction category ${JSON.stringify(category)} for ${JSON.stringify(
+        description
+      )}; convex/validators.ts allows ${DEDUCTION_CATEGORIES.join(", ")}`
+    );
+  }
+  return category;
+}
 
 function categoryFor(description) {
   for (const [pattern, category] of KNOWN_CATEGORIES) {
-    if (pattern.test(description)) return category;
+    if (pattern.test(description)) return assertCategory(category, description);
   }
-  return "OTHER";
+  // The app's own fallback for "not enough information to classify" is UNKNOWN,
+  // so the mock must use the same one rather than inventing a fifth category.
+  return "UNKNOWN";
 }
 
 /** Reads `Label: $123` lines out of the statement, exactly like a real model would. */
@@ -407,13 +435,28 @@ function responseAnalysisResponse(userPrompt) {
   };
 }
 
+// Test-only introspection, mirroring AgentMail's `GET /__sends`: the last few
+// prompts the app actually sent, so a failing extraction can be diagnosed from
+// the real request rather than guessed at. Nothing in the app calls this.
 const openaiCalls = [];
 const openai = createServer((req, res) => {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
   req.on("end", () => {
+    if (req.method === "GET" && req.url === "/__calls") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(openaiCalls.slice(-10)));
+      return;
+    }
+
     const payload = JSON.parse(body || "{}");
-    openaiCalls.push({ system: payload.messages?.[0]?.content ?? "", user: payload.messages?.[1]?.content ?? "" });
+    openaiCalls.push({
+      system: payload.messages?.[0]?.content ?? "",
+      user: payload.messages?.[1]?.content ?? "",
+      messageCount: payload.messages?.length ?? 0,
+      roles: (payload.messages ?? []).map((message) => message?.role ?? null),
+      responseFormat: payload.response_format?.type ?? null,
+    });
     const systemPrompt = payload.messages?.[0]?.content ?? "";
     const userPrompt = payload.messages?.[1]?.content ?? "";
     const isAssessment = systemPrompt.includes("potentially disputable");

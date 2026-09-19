@@ -28,7 +28,12 @@ const chatCompletionSchema = z.object({
 
 export type StructuredJsonRequest = {
   system: string;
-  user: string;
+  user:
+    | string
+    | Array<
+        | { type: "text"; text: string }
+        | { type: "image_url"; image_url: { url: string } }
+      >;
   schemaName: string;
   jsonSchema: Record<string, unknown>;
 };
@@ -75,14 +80,33 @@ export async function requestStructuredJson({
       signal: requestSignal(),
     });
 
-  let response = await send({
-    type: "json_schema",
-    json_schema: { name: schemaName, strict: true, schema: jsonSchema },
-  });
+  // The schema is carried in the prompt *as well as* in `response_format`, on
+  // every call — not only in the fallback below.
+  //
+  // `response_format` is a request, not a guarantee, and a gateway that does not
+  // implement it does not necessarily say so. One real OpenAI-compatible gateway
+  // (`api.apinex.bond`) answers `200 OK` to a `json_schema` request and ignores
+  // the schema entirely: the model then returns plausible JSON under its own key
+  // names (`{"letter": {…}}` for a schema that asks for `body`), which the
+  // caller's validator correctly rejects — so a working model looked like a
+  // broken one, and the HTTP-400 fallback never fired because the status was 200.
+  //
+  // Spelling the schema out costs a few hundred tokens and makes the contract
+  // hold on both kinds of provider. Validation before persistence is unchanged:
+  // this only makes the model more likely to produce something valid.
+  const schemaInstruction = `\n\nReply with a single JSON object that matches this JSON Schema exactly:\n${JSON.stringify(jsonSchema)}`;
+
+  let response = await send(
+    {
+      type: "json_schema",
+      json_schema: { name: schemaName, strict: true, schema: jsonSchema },
+    },
+    schemaInstruction
+  );
 
   // Not every OpenAI-compatible gateway implements `json_schema`. When the
-  // request is rejected for that reason only, fall back to JSON mode with the
-  // schema spelled out in the prompt; the response is validated either way.
+  // request is rejected for that reason only, fall back to JSON mode; the
+  // response is validated either way.
   if (response.status === 400) {
     const rejection = await response.text();
     if (!/response_format|json_schema/i.test(rejection)) {
@@ -91,10 +115,7 @@ export async function requestStructuredJson({
       );
     }
 
-    response = await send(
-      { type: "json_object" },
-      `\n\nReply with a single JSON object that matches this JSON Schema exactly:\n${JSON.stringify(jsonSchema)}`
-    );
+    response = await send({ type: "json_object" }, schemaInstruction);
   }
 
   if (!response.ok) {

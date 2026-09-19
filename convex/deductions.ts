@@ -1,17 +1,19 @@
 import { v } from "convex/values";
 
+import { resolveCaller } from "./caller";
 import { query } from "./_generated/server";
 
 /** The deductions extracted for a case, in the order they were recorded. */
 export const listByCase = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
     const caseData = await ctx.db.get(args.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     const deductions = await ctx.db
       .query("deductions")

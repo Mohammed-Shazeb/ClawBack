@@ -12,6 +12,7 @@ import {
   computePotentiallyDisputableAmount,
   validateAssessment,
 } from "./assessment";
+import { resolveCaller } from "./caller";
 import { toSafeMessage } from "./errors";
 import { requestStructuredJson } from "./openai";
 import { validatedAssessmentValidator } from "./validators";
@@ -303,15 +304,17 @@ export const failAssessment = internalMutation({
 export const retryAssessment = mutation({
   args: {
     deductionId: v.id("deductions"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
+
     const deduction = await ctx.db.get(args.deductionId);
     if (!deduction) throw new Error("Deduction not found");
 
     const caseData = await ctx.db.get(deduction.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     if (deduction.assessmentStatus === "ASSESSING") {
       throw new Error("An assessment is already running for this deduction");

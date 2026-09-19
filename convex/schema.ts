@@ -1,3 +1,4 @@
+import { authTables } from "@convex-dev/auth/server";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
@@ -19,13 +20,42 @@ import {
 } from "./validators";
 
 export default defineSchema({
+  // Convex Auth brings its own `users`, `authSessions`, `authAccounts`,
+  // `authRefreshTokens`, `authVerificationCodes`, `authVerifiers` and
+  // `authRateLimits` tables.
+  ...authTables,
+
+  /**
+   * `users` is redefined *after* the spread so the app's own fields survive,
+   * but it must keep every field and index Convex Auth relies on.
+   *
+   * Two things changed from the pre-auth definition, both deliberate:
+   *  - `email` is now optional, because Convex Auth can create a row before an
+   *    address is verified. The app's own lookups still require one to be
+   *    present, and nothing reads a user row expecting `email` to be a string.
+   *  - The address index is now named `email`, which is the name Convex Auth
+   *    queries. The old `by_email` index had to go rather than be kept
+   *    alongside it: Convex rejects two indexes over the same fields
+   *    (`IndexNotUnique`), so `users.ts` was updated to match.
+   */
   users: defineTable({
-    email: v.string(),
+    // Convex Auth's fields. The names and optionality are its contract.
     name: v.optional(v.string()),
+    image: v.optional(v.string()),
+    email: v.optional(v.string()),
+    emailVerificationTime: v.optional(v.number()),
+    phone: v.optional(v.string()),
+    phoneVerificationTime: v.optional(v.number()),
+    isAnonymous: v.optional(v.boolean()),
+    /** The auth provider subject this row was created from. */
+    authSubject: v.optional(v.string()),
+    /** Kept so rows written before auth existed stay schema-valid. */
     clerkUserId: v.optional(v.string()),
   })
-    .index("by_email", ["email"])
-    .index("by_clerk_user", ["clerkUserId"]),
+    .index("email", ["email"])
+    .index("phone", ["phone"])
+    .index("by_clerk_user", ["clerkUserId"])
+    .index("by_auth_subject", ["authSubject"]),
 
   cases: defineTable({
     userId: v.id("users"),
@@ -240,10 +270,7 @@ export default defineSchema({
     responseAnalyzedAt: v.optional(v.number()),
     /** Set when the message could not be associated with a case. */
     needsReview: v.optional(v.boolean()),
-    /**
-     * Attachment metadata only. Attachment contents are not downloaded or
-     * parsed yet, and nothing in the product claims otherwise.
-     */
+    /** Attachment metadata; image contents may be fetched during statement analysis. */
     attachments: v.optional(v.array(attachmentValidator)),
     sentAt: v.optional(v.number()),
     receivedAt: v.optional(v.number()),

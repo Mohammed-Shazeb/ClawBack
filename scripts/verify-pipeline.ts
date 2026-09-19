@@ -7,6 +7,8 @@
  */
 
 import { createHmac, randomBytes } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import type { Id } from "../convex/_generated/dataModel";
 import {
@@ -21,6 +23,12 @@ import {
   computePotentiallyDisputableAmount,
   validateAssessment,
 } from "../convex/assessment";
+import {
+  decideCaller,
+  DEMO_IDENTITY_ENV,
+  demoIdentityEnabled,
+  userIdFromSubject,
+} from "../convex/caller";
 import { toSafeMessage } from "../convex/errors";
 import {
   buildStatementUserPrompt,
@@ -882,6 +890,18 @@ function verifyLetterValidation() {
     ["the word 'lawyer'", "I am not represented by a lawyer in this matter."],
     ["a request for review", "I am requesting that these charges be reviewed."],
     ["a cautious inconsistency claim", "This appears inconsistent with the published guidance."],
+    // The Texas housing source *is* the Office of the Attorney General, and the
+    // drafting instructions require every claim to be attributed to its source.
+    // Naming it is attribution, not a threat — banning the phrase outright made
+    // every Texas case fail validation for obeying the prompt.
+    [
+      "attribution to the Attorney General's published guidance",
+      "The Office of the Attorney General's published guidance indicates that a landlord may not charge a tenant for normal wear and tear.",
+    ],
+    [
+      "attribution to the Attorney General by name",
+      "According to the Attorney General, a landlord may only charge for actual abnormal damage.",
+    ],
   ];
 
   for (const [name, sentence] of allowed) {
@@ -1311,6 +1331,34 @@ function verifyResponseAnalysis() {
     "an empty summary is rejected",
     validateResponseAnalysis({ ...validReading, summary: "   " }, { depositAmount: 1500 }) === null
   );
+  // The partial settlement — "I will refund the carpet, not the painting" — is
+  // the most likely real reply, and the live model read it as *both* accepting
+  // and refusing, so the whole reading was discarded. The prompt now says the two
+  // flags describe the dispute as a whole and that a partial concession is
+  // neither. This asserts the reading that rule produces is one the validator
+  // actually stores, so the fix cannot be a prompt that asks for the impossible.
+  const partial = validateResponseAnalysis(
+    {
+      ...validReading,
+      acceptsDispute: false,
+      rejectsDispute: false,
+      offersPartialReimbursement: true,
+      offeredAmount: 450,
+      providesNewEvidence: false,
+      newEvidenceSummary: null,
+    },
+    { depositAmount: 1500 }
+  );
+  check("a partial settlement is storable", partial !== null);
+  check(
+    "a partial settlement is recorded as an offer, not a verdict",
+    partial?.offersPartialReimbursement === true
+  );
+  check("a partial settlement keeps the figure it names", partial?.offeredAmount === 450);
+  check(
+    "a partial settlement claims neither acceptance nor rejection",
+    partial?.acceptsDispute === false && partial?.rejectsDispute === false
+  );
   check(
     "a summary shorter than a sentence is rejected",
     validateResponseAnalysis({ ...validReading, summary: "Rejected." }, { depositAmount: 1500 }) ===
@@ -1438,6 +1486,20 @@ function verifyResponseAnalysis() {
     "the prompt forbids estimating a figure",
     /Never estimate one/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
   );
+  check(
+    "the prompt scopes the two verdict flags to the dispute as a whole",
+    /as a whole/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
+  );
+  check(
+    "the prompt tells the model a partial concession is neither verdict",
+    /concedes some charges and refuses others is neither an acceptance nor a rejection/i.test(
+      RESPONSE_ANALYSIS_SYSTEM_PROMPT
+    )
+  );
+  check(
+    "the prompt forbids setting both verdict flags at once",
+    /Never set both flags to true/i.test(RESPONSE_ANALYSIS_SYSTEM_PROMPT)
+  );
 
   const properties = (responseAnalysisJsonSchema.properties ?? {}) as Record<string, unknown>;
   const required = (responseAnalysisJsonSchema.required ?? []) as string[];
@@ -1478,6 +1540,41 @@ function verifyResponseAnalysis() {
   check("the prompt names the letter being answered", prompt.includes("Dispute of deposit deductions"));
   check("the prompt includes the reply body verbatim", prompt.includes("The carpet was replaced"));
   check("the prompt restates the transcript-only instruction", /Use only what the reply contains/.test(prompt));
+
+  section("Landlord response analysis — a reply with nothing in it");
+
+  // The action refuses an empty body before it ever builds a prompt, so this
+  // covers the second line of defence: if a bodyless reply did reach the
+  // builder, the prompt must not be handed a row of blank or "undefined"
+  // headers for the model to interpret.
+  const bodyless = buildResponseAnalysisUserPrompt({
+    context: {
+      jurisdiction: "California",
+      depositAmount: 1500,
+      totalDeductions: 1000,
+      potentiallyDisputableAmount: 850,
+    },
+    message: { subject: "", body: "" },
+  });
+
+  check("a missing sender adds no From line", !/^From:/m.test(bodyless));
+  check("a missing subject adds no Subject line", !/^Subject:/m.test(bodyless));
+  check("a missing letter subject adds no letter line", !/Dispute letter subject/.test(bodyless));
+  check("no header is rendered as undefined", !/undefined|null|NaN/.test(bodyless));
+  check("no placeholder stands in for the missing text", !/\(no text\)|\(empty\)|\bN\/A\b/i.test(bodyless));
+  // Whatever sits between the reply heading and the closing instruction is the
+  // message itself. With no sender, subject or body there must be nothing there.
+  const betweenHeadingAndInstruction =
+    bodyless.split("The landlord's reply:")[1]?.split("Record what this reply says")[0] ?? "";
+  check("the body is left empty rather than filled with anything", betweenHeadingAndInstruction.trim() === "", JSON.stringify(betweenHeadingAndInstruction));
+  check(
+    "the prompt still tells the model what it is looking at",
+    /The landlord's reply:/.test(bodyless) && /Record what this reply says/.test(bodyless)
+  );
+  check(
+    "the case figures are still supplied without a message body",
+    bodyless.includes("$1500.00") && bodyless.includes("$1000.00") && bodyless.includes("$850.00")
+  );
 
   section("Landlord response analysis — summary line");
 
@@ -1549,6 +1646,330 @@ function verifyResponseAnalysis() {
   );
 }
 
+/**
+ * Reads the `--cb-*` tokens out of `app/globals.css`.
+ *
+ * Parsed rather than restated so the check measures the palette the product
+ * actually ships. If a token is renamed or removed the check fails loudly
+ * instead of quietly passing against a stale copy.
+ */
+function readDesignTokens(): Record<string, string> {
+  // Resolved from the repo root, which is where `npm run verify` runs. This file
+  // is compiled to CommonJS, where `import.meta` is not available.
+  const css = readFileSync(resolve(process.cwd(), "app/globals.css"), "utf8");
+  const tokens: Record<string, string> = {};
+
+  for (const [, name, value] of css.matchAll(/(--cb-[a-z-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+    tokens[name] = value.toLowerCase();
+  }
+
+  return tokens;
+}
+
+function relativeLuminance(hex: string): number {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const channel = (raw: number) => {
+    const c = raw / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+
+  return (
+    0.2126 * channel((value >> 16) & 255) +
+    0.7152 * channel((value >> 8) & 255) +
+    0.0722 * channel(value & 255)
+  );
+}
+
+function contrastRatio(a: string, b: string): number {
+  const [high, low] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (high + 0.05) / (low + 0.05);
+}
+
+/**
+ * The palette has to be readable, not merely tasteful. Every ink token is used
+ * for real content at small sizes, so each one must clear WCAG AA (4.5:1)
+ * against every surface it can sit on. The muted ink previously sat at 2.6–3.1
+ * and failed on all four.
+ */
+function verifyDesignTokenContrast() {
+  section("Design tokens meet WCAG AA for text");
+
+  const tokens = readDesignTokens();
+  const required = [
+    "--cb-surface",
+    "--cb-surface-muted",
+    "--cb-surface-sunken",
+    "--cb-page",
+    "--cb-ink",
+    "--cb-ink-secondary",
+    "--cb-ink-muted",
+  ];
+
+  for (const name of required) {
+    check(`${name} is defined in globals.css`, Boolean(tokens[name]), name);
+  }
+
+  if (required.some((name) => !tokens[name])) return;
+
+  const surfaces = ["--cb-surface", "--cb-surface-muted", "--cb-surface-sunken", "--cb-page"];
+  const inks = ["--cb-ink", "--cb-ink-secondary", "--cb-ink-muted"];
+
+  for (const ink of inks) {
+    for (const surface of surfaces) {
+      const ratio = contrastRatio(tokens[ink], tokens[surface]);
+      check(
+        `${ink} on ${surface} clears 4.5:1`,
+        ratio >= 4.5,
+        `${ratio.toFixed(2)}:1`
+      );
+    }
+  }
+
+  // The semantic colours carry state, so they must be readable too — including
+  // on their own tinted backgrounds, which is where they are actually used.
+  const semanticPairs: Array<[string, string]> = [
+    ["--cb-accent", "--cb-surface"],
+    ["--cb-accent", "--cb-accent-soft"],
+    ["--cb-attention", "--cb-surface"],
+    ["--cb-attention", "--cb-attention-soft"],
+    ["--cb-danger", "--cb-surface"],
+    ["--cb-danger", "--cb-danger-soft"],
+  ];
+
+  for (const [foreground, background] of semanticPairs) {
+    if (!tokens[foreground] || !tokens[background]) continue;
+    const ratio = contrastRatio(tokens[foreground], tokens[background]);
+    check(
+      `${foreground} on ${background} clears 4.5:1`,
+      ratio >= 4.5,
+      `${ratio.toFixed(2)}:1`
+    );
+  }
+
+  // White text on the accent is the primary button; it is a real pairing.
+  check(
+    "white on --cb-accent clears 4.5:1",
+    contrastRatio("#ffffff", tokens["--cb-accent"]) >= 4.5,
+    `${contrastRatio("#ffffff", tokens["--cb-accent"]).toFixed(2)}:1`
+  );
+}
+
+/**
+ * Identity and authorization.
+ *
+ * The decision itself is pure, so the security properties can be proven with no
+ * deployment. The last check scans the source instead, because the one thing a
+ * unit test cannot catch is a function that has not been written yet.
+ */
+function verifyCallerIdentity() {
+  section("Caller identity — the decision");
+
+  const asUser = (id: string) => id as Id<"users">;
+
+  // A session wins, and it wins even when the client claims to be someone else.
+  const withSession = decideCaller({
+    subject: "user_a|session_1",
+    claimedUserId: asUser("user_b"),
+    demoEnabled: false,
+  });
+  check(
+    "an authenticated caller resolves to their own id",
+    withSession.ok && (withSession.userId as string) === "user_a",
+    JSON.stringify(withSession)
+  );
+  check(
+    "a claimed id cannot override the session",
+    withSession.ok && (withSession.userId as string) !== "user_b"
+  );
+
+  const sessionInDemo = decideCaller({
+    subject: "user_a|session_1",
+    claimedUserId: asUser("user_b"),
+    demoEnabled: true,
+  });
+  check(
+    "demo mode does not weaken an authenticated caller",
+    sessionInDemo.ok && (sessionInDemo.userId as string) === "user_a"
+  );
+
+  // `identity.subject` is `userId|sessionId`; taking it whole would never match.
+  check(
+    "the session segment is not mistaken for the user id",
+    userIdFromSubject("user_a|session_1") === "user_a"
+  );
+  check("a subject with no divider still resolves", userIdFromSubject("user_a") === "user_a");
+  check("an empty subject resolves to nothing", userIdFromSubject("") === null);
+
+  const anonymous = decideCaller({ subject: null, demoEnabled: false });
+  check(
+    "an anonymous caller is refused when demo mode is off",
+    !anonymous.ok && anonymous.reason === "NO_SESSION"
+  );
+
+  const anonymousClaiming = decideCaller({
+    subject: null,
+    claimedUserId: asUser("user_a"),
+    demoEnabled: false,
+  });
+  check("an anonymous caller cannot buy access by claiming an id", !anonymousClaiming.ok);
+
+  const malformed = decideCaller({
+    subject: "",
+    claimedUserId: asUser("user_a"),
+    demoEnabled: true,
+  });
+  check(
+    "a malformed subject is refused even in demo mode",
+    !malformed.ok && malformed.reason === "MALFORMED_SUBJECT"
+  );
+
+  const demo = decideCaller({
+    subject: null,
+    claimedUserId: asUser("user_a"),
+    demoEnabled: true,
+  });
+  check("demo mode accepts an anonymous caller", demo.ok && (demo.userId as string) === "user_a");
+
+  const demoWithoutId = decideCaller({ subject: null, demoEnabled: true });
+  check("demo mode still needs an id to act as", !demoWithoutId.ok);
+
+  section("Caller identity — demo mode is off unless asked for");
+
+  const saved = process.env[DEMO_IDENTITY_ENV];
+
+  delete process.env[DEMO_IDENTITY_ENV];
+  check("demo identities are off when the variable is unset", demoIdentityEnabled() === false);
+
+  // Only the exact string turns it on, so a stray value cannot open a
+  // deployment that meant to stay closed.
+  for (const value of ["", "1", "yes", "true ", "false", "TRUE"]) {
+    process.env[DEMO_IDENTITY_ENV] = value;
+    check(
+      `demo identities stay off for ${JSON.stringify(value)}`,
+      demoIdentityEnabled() === false
+    );
+  }
+
+  process.env[DEMO_IDENTITY_ENV] = "true";
+  check('demo identities turn on for exactly "true"', demoIdentityEnabled() === true);
+
+  if (saved === undefined) delete process.env[DEMO_IDENTITY_ENV];
+  else process.env[DEMO_IDENTITY_ENV] = saved;
+
+  section("Caller identity — no public function trusts a userId argument");
+  verifyNoPublicFunctionTrustsUserId();
+}
+
+/**
+ * The structural half of the guard.
+ *
+ * Every public function that takes a `userId` must resolve it on the server.
+ * This is a source scan rather than a unit test because the real risk is a
+ * function that has not been written yet: a new query that accepts `userId` and
+ * passes it straight to a lookup looks exactly like the twenty-four that are now
+ * guarded, so only a structural check catches it.
+ */
+function verifyNoPublicFunctionTrustsUserId() {
+  const convexDir = resolve(__dirname, "../../convex");
+
+  const offenders: string[] = [];
+  const trusting: string[] = [];
+  let inspected = 0;
+
+  const files = readdirSync(convexDir).filter(
+    (name) => name.endsWith(".ts") && name !== "caller.ts"
+  );
+
+  for (const name of files) {
+    const source = stripCommentsAndStrings(readFileSync(resolve(convexDir, name), "utf8"));
+
+    // Anchored on `= ` so the internal* wrappers (which differ in case) and any
+    // other registration are not mistaken for a public function.
+    for (const match of source.matchAll(/export const (\w+) = (query|mutation|action)\(\{/g)) {
+      const block = sliceBalanced(source, match.index + match[0].length - 1);
+      if (block === null || !block.includes("userId")) continue;
+
+      inspected += 1;
+
+      const where = `${name}:${match[1]}`;
+      if (!block.includes("resolveCaller")) offenders.push(where);
+      if (block.includes("!== args.userId")) trusting.push(where);
+    }
+  }
+
+  check("the scan found the guarded functions", inspected >= 20, `inspected ${inspected}`);
+  check(
+    "every public function with a userId argument resolves the caller",
+    offenders.length === 0,
+    offenders.join(", ")
+  );
+  check(
+    "no public function compares against the client's userId",
+    trusting.length === 0,
+    trusting.join(", ")
+  );
+}
+
+/** The `{ ... }` starting at `start`, by brace matching. */
+function sliceBalanced(source: string, start: number): string | null {
+  let depth = 0;
+
+  for (let i = start; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Blanks out comments and string bodies so brace counting cannot be thrown off
+ * by a `{` inside a message or a doc comment. Template literals are treated as
+ * plain strings, so the braces in an interpolation are not counted either.
+ */
+function stripCommentsAndStrings(source: string): string {
+  let out = "";
+  let i = 0;
+
+  while (i < source.length) {
+    const pair = source.slice(i, i + 2);
+
+    if (pair === "//") {
+      const end = source.indexOf("\n", i);
+      i = end === -1 ? source.length : end;
+      continue;
+    }
+
+    if (pair === "/*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end === -1 ? source.length : end + 2;
+      continue;
+    }
+
+    const char = source[i];
+
+    if (char === '"' || char === "'" || char === "`") {
+      out += " ";
+      i += 1;
+      while (i < source.length && source[i] !== char) {
+        if (source[i] === "\\") i += 1;
+        i += 1;
+      }
+      i += 1;
+      out += " ";
+      continue;
+    }
+
+    out += char;
+    i += 1;
+  }
+
+  return out;
+}
+
 async function main() {
   await verifySignatures();
   verifyFailureMessages();
@@ -1565,6 +1986,8 @@ async function main() {
   verifyLetterEvidenceGate();
   verifySendContract();
   verifyResponseAnalysis();
+  verifyDesignTokenContrast();
+  verifyCallerIdentity();
 
   console.log(`\n${checks - failures}/${checks} checks passed`);
 

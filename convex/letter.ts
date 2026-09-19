@@ -167,7 +167,24 @@ const FORBIDDEN_CLAIM_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bsteal(?:ing)?\b|\bstole\b|\btheft\b/i, reason: "accuses the landlord of theft" },
   { pattern: /\b(?:guarantee|guaranteed|we\s+will\s+win|you\s+will\s+win|certain\s+to\s+recover)\b/i, reason: "promises an outcome" },
   { pattern: /\b\d{1,3}\s?%\s*(?:chance|likely|sure|certain)/i, reason: "states a success probability" },
-  { pattern: /\b(?:sue|lawsuit|litigation|small\s+claims\s+court|attorney\s+general|report\s+you)\b/i, reason: "threatens legal action" },
+  { pattern: /\b(?:sue|suing|lawsuit|litigation|small\s+claims\s+court)\b/i, reason: "threatens legal action" },
+  { pattern: /\breport\s+you\b/i, reason: "threatens to report the landlord" },
+  // "Attorney General" on its own is NOT a threat. Banning the phrase outright
+  // was a prompt/validator conflict: the Texas housing source *is* the Office of
+  // the Attorney General, and the instructions require every claim to be
+  // attributed to the source it came from — so every Texas case failed drafting
+  // for doing exactly what it was told. What must be refused is the escalation:
+  // reporting the landlord *to* the Attorney General.
+  {
+    pattern:
+      /\b(?:report|reports|reporting|contact|contacts|contacting|complain|complains|complaining|complaint|escalat\w*|notif\w*|involv\w*|refer\w*|alert\w*)\b[^.\n]{0,40}\battorney\s+general\b/i,
+    reason: "threatens to report the landlord to the Attorney General",
+  },
+  {
+    pattern:
+      /\battorney\s+general\b[^.\n]{0,40}\b(?:against\s+you|will\s+be\s+(?:contacted|notified)|has\s+been\s+(?:contacted|notified))\b/i,
+    reason: "threatens to report the landlord to the Attorney General",
+  },
   { pattern: /\b(?:within|by)\s+\d{1,3}\s+(?:days?|business\s+days?|weeks?)\b/i, reason: "invents or asserts a deadline" },
   { pattern: /\b(?:pursuant\s+to|under\s+section|§|\b\d+\s+U\.?S\.?C\.?|\bCivil\s+Code\s+§?\s*\d)/i, reason: "cites a statute" },
   { pattern: /\bv\.\s+[A-Z][A-Za-z]+|\bNo\.\s*\d/i, reason: "cites a court case" },
@@ -175,18 +192,27 @@ const FORBIDDEN_CLAIM_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 ];
 
 /**
- * Validates a generated letter. Returns null when the output does not match the
- * schema, contains an unsupported legal claim, or names no real stored source.
+ * Validates a generated letter, and says *why* it was rejected.
  *
- * A letter with no traceable evidence is not a letter Clawback will store: the
- * caller surfaces "more evidence is required" instead.
+ * A bare `null` is undiagnosable in production: the renter sees "the draft did
+ * not meet the requirements" and nothing says which rule fired, so a systematic
+ * prompt/validator conflict looks identical to one flaky model call. The reason
+ * is surfaced to the caller rather than swallowed.
+ *
+ * Both entry points share this one implementation so they can never disagree.
  */
-export function validateLetter(
+export type LetterValidationResult =
+  | { ok: true; letter: ValidatedLetter }
+  | { ok: false; reason: string };
+
+export function validateLetterWithReason(
   raw: unknown,
   options: { sources: Array<{ label: string; id: Id<"sources"> }> }
-): ValidatedLetter | null {
+): LetterValidationResult {
   const parsed = letterOutputSchema.safeParse(raw);
-  if (!parsed.success) return null;
+  if (!parsed.success) {
+    return { ok: false, reason: "the model's reply did not match the required structure" };
+  }
 
   const output = parsed.data;
 
@@ -195,13 +221,24 @@ export function validateLetter(
   const recipient = output.recipient.trim();
 
   // A letter with no body, or one that is implausibly short, is not usable.
-  if (body.length < 200) return null;
-  if (subject.length === 0 || recipient.length === 0) return null;
+  if (body.length < 200) {
+    return { ok: false, reason: "the body was too short to be a usable letter" };
+  }
+  if (subject.length === 0 || recipient.length === 0) {
+    return { ok: false, reason: "the recipient or subject was empty" };
+  }
 
   // Reject unsupported legal claims rather than persisting them.
   const haystack = `${subject}\n${body}`;
-  for (const { pattern } of FORBIDDEN_CLAIM_PATTERNS) {
-    if (pattern.test(haystack)) return null;
+  for (const { pattern, reason } of FORBIDDEN_CLAIM_PATTERNS) {
+    const match = pattern.exec(haystack);
+    if (match) {
+      // Naming the matched text matters: several patterns share a reason, and
+      // "which rule fired" is undiagnosable from the reason alone. Without it a
+      // systematic prompt/validator conflict is indistinguishable from a flaky
+      // model call.
+      return { ok: false, reason: `${reason} — matched "${match[0].slice(0, 60)}"` };
+    }
   }
 
   // Map the model's labels back to the real stored source ids. A label the
@@ -214,14 +251,34 @@ export function validateLetter(
   }
 
   // Every evidence-backed letter must actually rest on at least one source.
-  if (sourceIds.length === 0) return null;
+  if (sourceIds.length === 0) {
+    return { ok: false, reason: "it cited no source that exists on this case" };
+  }
 
   return {
-    recipient: recipient.slice(0, 200),
-    subject: subject.slice(0, 300),
-    body: body.slice(0, 20_000),
-    supportingSourceIds: sourceIds,
+    ok: true,
+    letter: {
+      recipient: recipient.slice(0, 200),
+      subject: subject.slice(0, 300),
+      body: body.slice(0, 20_000),
+      supportingSourceIds: sourceIds,
+    },
   };
+}
+
+/**
+ * Validates a generated letter. Returns null when the output does not match the
+ * schema, contains an unsupported legal claim, or names no real stored source.
+ *
+ * A letter with no traceable evidence is not a letter Clawback will store: the
+ * caller surfaces "more evidence is required" instead.
+ */
+export function validateLetter(
+  raw: unknown,
+  options: { sources: Array<{ label: string; id: Id<"sources"> }> }
+): ValidatedLetter | null {
+  const result = validateLetterWithReason(raw, options);
+  return result.ok ? result.letter : null;
 }
 
 /**

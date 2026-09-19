@@ -2,6 +2,7 @@ import { v } from "convex/values";
 
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery, mutation } from "./_generated/server";
+import { resolveCaller } from "./caller";
 import { toSafeMessage } from "./errors";
 import {
   authorityLabel,
@@ -11,7 +12,7 @@ import {
   MAX_SOURCES_PER_DEDUCTION,
   searchAuthoritative,
 } from "./firecrawl";
-import { buildResearchQuestion } from "./questions";
+import { buildResearchKeywordQuery, buildResearchQuestion } from "./questions";
 
 /**
  * Firecrawl research pipeline: deduction → research question → authoritative
@@ -130,10 +131,30 @@ export const researchDeduction = internalAction({
         category: claim.category,
       });
 
-      const results = await searchAuthoritative(question);
+      // Two queries over the same facts, both filtered by the same authority
+      // rule. The prose question is the auditable one, but a real search engine
+      // returns little for it — measured live, it produced no official host at
+      // all for a deduction where a keyword query surfaced one. Running both is
+      // what turns "no sources to assess against" into a real finding.
+      const keywordQuery = buildResearchKeywordQuery({
+        jurisdiction: context.jurisdiction,
+        description: claim.description,
+        category: claim.category,
+      });
 
-      const official = results
+      const [fromQuestion, fromKeywords] = await Promise.all([
+        searchAuthoritative(question),
+        searchAuthoritative(keywordQuery),
+      ]);
+
+      const seenUrls = new Set<string>();
+      const official = [...fromQuestion, ...fromKeywords]
         .filter((result) => classifyAuthority(result.url) === "OFFICIAL")
+        .filter((result) => {
+          if (seenUrls.has(result.url)) return false;
+          seenUrls.add(result.url);
+          return true;
+        })
         .slice(0, MAX_SOURCES_PER_DEDUCTION);
 
       const stored = await ctx.runMutation(internal.research.storeResearchResults, {
@@ -344,15 +365,17 @@ export const failResearch = internalMutation({
 export const retryResearch = mutation({
   args: {
     deductionId: v.id("deductions"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
+
     const deduction = await ctx.db.get(args.deductionId);
     if (!deduction) throw new Error("Deduction not found");
 
     const caseData = await ctx.db.get(deduction.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     if (deduction.researchStatus === "RESEARCHING") {
       throw new Error("Research is already running for this deduction");

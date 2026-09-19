@@ -13,6 +13,10 @@ import type { EmailAttachment } from "./validators";
 
 const DEFAULT_API_BASE_URL = "https://api.agentmail.to/v0";
 const REQUEST_TIMEOUT_MS = 30_000;
+const attachmentResponseSchema = z.object({
+  download_url: z.string().url(),
+  content_type: z.string().nullish(),
+});
 
 const inboxSchema = z.object({
   inbox_id: z.string().min(1),
@@ -216,6 +220,35 @@ export async function fetchInboundMessageBody({
   return parsed.data.text ?? parsed.data.extracted_text ?? null;
 }
 
+/** Downloads an inbound attachment through AgentMail and returns its image data URL. */
+export async function fetchInboundImageAttachment({
+  inboxId,
+  messageId,
+  attachmentId,
+  contentType,
+}: {
+  inboxId: string;
+  messageId: string;
+  attachmentId: string;
+  contentType?: string;
+}): Promise<string | null> {
+  const response = await agentMailRequest(
+    `/inboxes/${encodeURIComponent(inboxId)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: "GET" }
+  );
+  const parsed = attachmentResponseSchema.safeParse(response);
+  if (!parsed.success) return null;
+
+  const fileResponse = await fetch(parsed.data.download_url, {
+    signal: requestSignal(),
+  });
+  if (!fileResponse.ok) return null;
+
+  const bytes = new Uint8Array(await fileResponse.arrayBuffer());
+  const type = parsed.data.content_type ?? contentType ?? "image/jpeg";
+  return `data:${type};base64,${bytesToBase64(bytes)}`;
+}
+
 export function normalizeInboundMessage(
   message: z.infer<typeof messageSchema>
 ): InboundMessage {
@@ -337,4 +370,16 @@ async function agentMailRequest(
   }
 
   return (await response.json()) as unknown;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function requestSignal(): AbortSignal | undefined {
+  return typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+    ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    : undefined;
 }

@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
+import { resolveCaller } from "./caller";
 import { toSafeMessage } from "./errors";
 import {
   buildLetterUserPrompt,
@@ -13,7 +14,7 @@ import {
   LETTER_SYSTEM_PROMPT,
   letterJsonSchema,
   type LetterDeductionInput,
-  validateLetter,
+  validateLetterWithReason,
 } from "./letter";
 import { requestStructuredJson } from "./openai";
 
@@ -73,10 +74,11 @@ async function loadCaseForOwner(
 export const getForCase = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    await loadCaseForOwner(ctx, args.caseId, callerId);
 
     return await resolveLiveLetter(ctx, args.caseId);
   },
@@ -104,10 +106,11 @@ async function resolveLiveLetter(ctx: QueryCtx | MutationCtx, caseId: Id<"cases"
 export const getSupportingSources = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const letter = await resolveLiveLetter(ctx, args.caseId);
 
@@ -134,10 +137,11 @@ export const getSupportingSources = query({
 export const getDraftReadiness = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const deductions = await ctx.db
       .query("deductions")
@@ -462,23 +466,26 @@ export const generateLetter = internalAction({
         jsonSchema: letterJsonSchema,
       });
 
-      const validated = validateLetter(raw, {
+      const validated = validateLetterWithReason(raw, {
         sources: claim.sources.map((source) => ({ label: source.label, id: source.id })),
       });
 
-      if (!validated) {
+      // Name the rule that fired. "Did not meet the requirements" alone is
+      // indistinguishable from a one-off bad completion, so a systematic
+      // conflict between the prompt and the validator would never be noticed.
+      if (!validated.ok) {
         throw new Error(
-          "The drafted letter did not meet the evidence and language requirements, so it was not saved."
+          `The drafted letter did not meet the evidence and language requirements — ${validated.reason} — so it was not saved.`
         );
       }
 
       const stored = await ctx.runMutation(internal.letters.storeGeneratedLetter, {
         letterId: claim.letterId,
         runId: claim.runId,
-        recipient: validated.recipient,
-        subject: validated.subject,
-        body: validated.body,
-        supportingSourceIds: validated.supportingSourceIds,
+        recipient: validated.letter.recipient,
+        subject: validated.letter.subject,
+        body: validated.letter.body,
+        supportingSourceIds: validated.letter.supportingSourceIds,
       });
 
       if (!stored) {
@@ -508,21 +515,22 @@ export const generateLetter = internalAction({
 });
 
 /**
- * Queues drafting for the case owner. Authorization happens inside the claim,
- * against the stored owner, so a forged user id cannot start generation for
- * someone else's case.
+ * Queues drafting for the case owner. The caller is resolved here and the
+ * derived id is what travels to the scheduled action, so generation can only
+ * ever run against the caller's own case.
  */
 export const draftLetter = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args): Promise<null> => {
-    await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    await loadCaseForOwner(ctx, args.caseId, callerId);
 
     await ctx.scheduler.runAfter(0, internal.letters.generateLetter, {
       caseId: args.caseId,
-      userId: args.userId,
+      userId: callerId,
     });
 
     return null;
@@ -537,13 +545,14 @@ export const draftLetter = mutation({
 export const saveLetterEdits = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
     recipient: v.string(),
     subject: v.string(),
     body: v.string(),
   },
   handler: async (ctx, args) => {
-    const caseData = await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    const caseData = await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const letter = await resolveLiveLetter(ctx, args.caseId);
 
@@ -604,10 +613,11 @@ export const saveLetterEdits = mutation({
 export const presentForApproval = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    const caseData = await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    const caseData = await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const letter = await resolveLiveLetter(ctx, args.caseId);
 
@@ -657,10 +667,11 @@ export const presentForApproval = mutation({
 export const approveLetter = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    const caseData = await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    const caseData = await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const letter = await resolveLiveLetter(ctx, args.caseId);
 
@@ -714,10 +725,11 @@ export const approveLetter = mutation({
 export const startNewDraft = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const letters = await ctx.db
       .query("letters")

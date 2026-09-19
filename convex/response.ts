@@ -39,10 +39,11 @@ Rules:
 2. Never state or imply a legal conclusion. Do not say a deduction is illegal or lawful, do not say the renter will win or lose, and do not describe what either party is legally required to do.
 3. Do not take sides, do not advise, and do not predict what happens next.
 4. Flags reflect explicit content only. A flag is false when the message does not say it. Never set a flag because it seems plausible or helpful.
-   - acceptsDispute: the reply concedes the dispute — it agrees that a deduction was not justified. Offering to pay an amount is recorded as offersPartialReimbursement instead, and does not by itself make this true.
-   - rejectsDispute: the reply refuses the dispute.
+   - acceptsDispute: the reply concedes the dispute **as a whole** — it agrees that the deductions the letter raised were not justified. It is false when the reply concedes only some of those charges while refusing others.
+   - rejectsDispute: the reply refuses the dispute **as a whole**. It is false when the reply refuses only some charges while conceding others.
+   - A reply that concedes some charges and refuses others is neither an acceptance nor a rejection. Set **both** flags to false and record the concession with offersPartialReimbursement. Never set both flags to true: a reply cannot both accept and refuse the same dispute, and a reading that says so is discarded unread.
    - requestsMoreInformation: the reply asks the renter for something (documents, details, clarification).
-   - offersPartialReimbursement: the reply offers to pay an amount.
+   - offersPartialReimbursement: the reply offers to pay an amount. An offer to pay for some charges while refusing others is exactly this flag.
    - providesNewEvidence: the reply introduces material that was not in the original statement (photographs, invoices, a new claim).
 5. offeredAmount: the figure the reply says it will pay, as a plain number. Use null when the reply names no figure. Never estimate one.
 6. newEvidenceSummary: what the new material is, or null when there is none.

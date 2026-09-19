@@ -252,10 +252,7 @@ export const validatedAssessmentValidator = v.object({
   assessmentSourceIds: v.array(v.id("sources")),
   assessmentMissingInformation: v.array(v.string()),
 });
-/**
- * Attachment metadata only. Attachment bodies are never downloaded or parsed
- * in this milestone, so nothing here claims the document was read.
- */
+/** Attachment metadata retained with inbound mail; image bodies are fetched only during analysis. */
 export const attachmentValidator = v.object({
   attachmentId: v.optional(v.string()),
   filename: v.optional(v.string()),

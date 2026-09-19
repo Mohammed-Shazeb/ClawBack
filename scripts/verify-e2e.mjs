@@ -20,32 +20,116 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "whsec_bW9ja3NlY3JldGZvcnRl
 // The AgentMail mock's test-only introspection endpoint (`GET /__sends`) lives at
 // the server root, not under the `/v0` API prefix the deployment is pointed at.
 const MOCKS_URL = process.env.MOCKS_URL ?? "http://127.0.0.1:4592";
+// Likewise the OpenAI mock's prompt log (`GET /__calls`) at :4591.
+const OPENAI_MOCK_URL = process.env.OPENAI_MOCK_URL ?? "http://127.0.0.1:4591";
 
 const secretBytes = Buffer.from(WEBHOOK_SECRET.replace(/^whsec_/, ""), "base64");
 
-const checks = [];
+/**
+ * The deduction categories the app's schema accepts, mirrored from
+ * `convex/validators.ts` DEDUCTION_CATEGORIES.
+ *
+ * Deliberately duplicated rather than imported: this file is plain Node and
+ * cannot load a Convex module. The duplication is the point — if the enum
+ * changes, this list must change with it, and the check below is what proves
+ * the mock and the app still agree on the same contract.
+ */
+const LEGAL_CATEGORIES = ["ORDINARY_WEAR", "TENANT_DAMAGE", "FEE", "UNKNOWN"];
+
+let checks = 0;
 let failed = 0;
 
+/**
+ * Printed as it runs, never buffered.
+ *
+ * Buffering the whole run and joining at the end made a stalled suite look
+ * exactly like a working one — a run whose mock had died sat silent for minutes
+ * and read as a hang rather than an infrastructure failure. Streaming means the
+ * last line on screen is always the check that is actually running.
+ */
 function check(name, passed, detail) {
-  checks.push(`${passed ? "ok  " : "FAIL"} ${name}${!passed && detail !== undefined ? ` — ${detail}` : ""}`);
+  checks += 1;
+  console.log(`${passed ? "ok  " : "FAIL"} ${name}${!passed && detail !== undefined ? ` — ${detail}` : ""}`);
   if (!passed) failed += 1;
 }
 
-async function call(kind, path, args) {
+let skipped = 0;
+
+/**
+ * Records a check that this run cannot decide, and says so out loud.
+ *
+ * This exists because the alternative is worse. The authenticated path cannot be
+ * exercised against a local backend at all (see `outcome` below), and the first
+ * version of the authentication section quietly reported those cases as passes:
+ * it tested `response.status !== "error"`, but the rejection Convex returns has
+ * no `status` field, so an unrecognised response read as a success. A check that
+ * cannot fail is not a check — and one that cannot *run* must not be counted as
+ * one either, or the total becomes a lie.
+ *
+ * A skip is deliberately not a pass: it does not increment `checks`, and the
+ * final line reports how many there were, so nobody can read this suite's total
+ * as "the authenticated path is verified".
+ */
+function skip(name, reason) {
+  skipped += 1;
+  console.log(`SKIP ${name} — ${reason}`);
+}
+
+/**
+ * Classifies a Convex HTTP response.
+ *
+ * `{status:"success", value}` and `{status:"error", errorMessage}` are the two
+ * documented shapes. Anything else is a *third* kind, and the one that matters
+ * here is `AuthProviderDiscoveryFailed`: Convex fetches the auth provider
+ * configuration from the site host before it will trust a token, and the local
+ * backend cannot serve that request, so every token is rejected before any
+ * function runs. Folding that into "not an error, therefore fine" is precisely
+ * the bug this classifier exists to prevent.
+ */
+function outcome(response) {
+  if (response.status === "success") return { kind: "ok", value: response.value };
+  if (response.status === "error") return { kind: "error", message: String(response.errorMessage) };
+  return { kind: "other", message: `${response.code ?? "unknown"}: ${response.message ?? ""}` };
+}
+
+/**
+ * Calls a Convex function over the HTTP API.
+ *
+ * `token` is optional and is the whole point of the authentication section: with
+ * it the request carries a verified session, without it the request is anonymous.
+ * Everything outside that section omits it, which is why the rest of the suite
+ * runs in demo mode.
+ */
+async function call(kind, path, args, token) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
   const res = await fetch(`${CONVEX}/api/${kind}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ path, args }),
   });
   const text = await res.text();
   return text ? JSON.parse(text) : {};
 }
 
-const query = (path, args) => call("query", path, args);
-const mutation = (path, args) => call("mutation", path, args);
-const action = (path, args) => call("action", path, args);
+const query = (path, args, token) => call("query", path, args, token);
+const mutation = (path, args, token) => call("mutation", path, args, token);
+const action = (path, args, token) => call("action", path, args, token);
 
+/**
+ * Polls until `predicate` is true, announcing the wait so a stall is visible.
+ *
+ * Silence during a wait is indistinguishable from a hang: a dead mock provider
+ * made this suite sit for minutes with no output at all. The wait now names
+ * itself up front, and says so if it is still going after a few seconds — so the
+ * last line on screen always points at the thing that is actually stuck.
+ */
 async function waitFor(description, predicate, { attempts = 60, delayMs = 1000 } = {}) {
+  const startedAt = Date.now();
+  console.log(`...  waiting for ${description}`);
+  let announcedSlow = false;
+
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const result = await predicate();
@@ -53,9 +137,16 @@ async function waitFor(description, predicate, { attempts = 60, delayMs = 1000 }
     } catch {
       // keep polling
     }
+
+    if (!announcedSlow && Date.now() - startedAt > 5000) {
+      announcedSlow = true;
+      console.log(`...  still waiting for ${description} — if this never clears, check the mocks`);
+    }
+
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  check(description, false, "timed out");
+
+  check(description, false, `timed out after ${attempts} attempts`);
   return false;
 }
 
@@ -137,6 +228,46 @@ function replyEvent(inboxId, { messageId, threadId, references, from, subject, t
 async function mockSends() {
   const res = await fetch(`${MOCKS_URL}/__sends`);
   return res.ok ? await res.json() : [];
+}
+
+/**
+ * The OpenAI mock's prompt log, used to prove what the app did *not* ask for.
+ * Keeps only the last ten prompts, so an unchanged log is proof that nothing
+ * was appended.
+ */
+async function mockCalls() {
+  const res = await fetch(`${OPENAI_MOCK_URL}/__calls`);
+  return res.ok ? await res.json() : [];
+}
+
+/**
+ * The sign-in code the app just emailed, read back from the AgentMail mock.
+ *
+ * The app's sign-in mail goes out through the real AgentMail transport
+ * (`AUTH_EMAIL_TRANSPORT=agentmail`), which in this suite is the mock — so the
+ * message the app composed is sitting in the mock's send log. Reading the code
+ * back out of it is what lets this suite complete a genuine sign-in without a
+ * mailbox, and it exercises the delivery path at the same time.
+ */
+async function signInCode(email) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const res = await fetch(`${MOCKS_URL}/__sends`);
+    const sends = res.ok ? await res.json() : [];
+
+    const match = [...sends]
+      .reverse()
+      .find(
+        (send) =>
+          send.subject === "Sign in to Clawback" && String(send.to ?? "").includes(email)
+      );
+
+    const code = /[?&]code=([^&\s]+)/.exec(match?.text ?? "")?.[1];
+    if (code) return code;
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  return null;
 }
 
 async function deliver(delivery) {
@@ -238,6 +369,33 @@ async function main() {
   check(
     "the extracted total is recomputed from the deductions",
     (await query("cases:get", { caseId, userId })).value?.totalDeductions === 1000
+  );
+
+  // The JSON Schema must ride along in the prompt, not only in `response_format`.
+  // `response_format` is a request, not a guarantee: a real OpenAI-compatible
+  // gateway answers 200 to a `json_schema` request and ignores the schema
+  // entirely, so the model returns its own key names and the validator rejects a
+  // response from a perfectly good model. Carrying the schema in the prompt as
+  // well is what makes the contract hold on both kinds of provider — and the
+  // mock records the system prompt, so it is checked here rather than trusted.
+  //
+  // The extraction call is located by its own prompt rather than assumed to be
+  // the newest, so a later assessment finishing first cannot make this pass or
+  // fail for the wrong reason.
+  const extractionCall = (await mockCalls()).find((call) =>
+    /You read security deposit statements/i.test(call.system ?? "")
+  );
+  check("the extraction call was recorded", Boolean(extractionCall), "no extraction prompt in the mock log");
+  check(
+    "the model call carries the JSON Schema in the prompt, not only in response_format",
+    /matches this JSON Schema exactly/.test(extractionCall?.system ?? "") &&
+      (extractionCall?.system ?? "").includes('"depositAmount"'),
+    `response_format=${extractionCall?.responseFormat}`
+  );
+  check(
+    "the schema in the prompt is the one the app validates against",
+    (extractionCall?.system ?? "").includes('"statedTotalDeductions"') &&
+      (extractionCall?.system ?? "").includes('"additionalProperties":false')
   );
 
   // --- 5. Research ---------------------------------------------------------------
@@ -1346,16 +1504,349 @@ async function main() {
   })).value;
   check("a case with no landlord address cannot send", noAddressCase !== undefined);
 
+  // --- 35. Extraction accepts whatever the landlord actually wrote -------------------------------------------------------
+  // A charge the model cannot place must still be recorded, as UNKNOWN. This
+  // section exists because every record in STANDARD_RECORDS happens to match a
+  // pattern the mock knows, so the "unclassifiable charge" path was never
+  // exercised here — and an invalid fallback category (a value outside
+  // DEDUCTION_CATEGORIES) shipped unnoticed as a result. Because the app
+  // validates every provider response before persisting it, one such value
+  // rejects the *whole* statement: the email is marked FAILED and the case is
+  // stranded. That is the correct app behaviour, so the contract the mock must
+  // honour is "only ever emit a category the app accepts", and it is checked
+  // end to end here rather than in isolation.
+  const oddUser = (await mutation("users:ensureDemo", {})).value;
+  const oddCaseId = (await action("cases:createWithInbox", {
+    userId: oddUser,
+    jurisdiction: "California",
+    depositAmount: 1200,
+    totalDeductions: 75,
+  })).value;
+  check("a case for the odd statement was created", Boolean(oddCaseId));
+
+  let oddCase = null;
+  await waitFor("the odd case inbox becomes READY", async () => {
+    oddCase = (await query("cases:get", { caseId: oddCaseId, userId: oddUser })).value;
+    return oddCase?.inboxStatus === "READY" && Boolean(oddCase?.inboxId);
+  });
+
+  await deliver(
+    signedDelivery(
+      statementEvent(oddCase.inboxId, {
+        messageId: messageId("msg_unclassifiable"),
+        records: [
+          "Security deposit: $1,200",
+          "Miscellaneous charge: $75",
+          "Total deductions: $75",
+        ],
+      })
+    )
+  );
+
+  await waitFor("the odd statement is processed", async () => {
+    const rows = (await query("emails:listByCase", { caseId: oddCaseId, userId: oddUser })).value;
+    return rows?.some(
+      (email) => email.processingStatus === "PROCESSED" || email.processingStatus === "FAILED"
+    );
+  });
+
+  const oddEmails = (await query("emails:listByCase", { caseId: oddCaseId, userId: oddUser })).value ?? [];
+  check(
+    "a statement with an unclassifiable charge is still read",
+    oddEmails[0]?.processingStatus === "PROCESSED",
+    oddEmails[0]?.processingError
+  );
+
+  const oddDeductions = (await query("deductions:listByCase", { caseId: oddCaseId, userId: oddUser })).value ?? [];
+  check(
+    "the unclassifiable charge became a deduction",
+    oddDeductions.length === 1,
+    String(oddDeductions.length)
+  );
+  check(
+    "an unclassifiable charge is recorded as UNKNOWN rather than dropped",
+    oddDeductions[0]?.category === "UNKNOWN",
+    String(oddDeductions[0]?.category)
+  );
+  check(
+    "every extracted category is one the app's schema accepts",
+    oddDeductions.length > 0 && oddDeductions.every((row) => LEGAL_CATEGORIES.includes(row.category)),
+    oddDeductions.map((row) => row.category).join(",")
+  );
+
+  // --- 36. A reply with no readable text, and reading the same reply twice ------------------------------
+  // Two Phase-2 gaps that had no coverage anywhere: a landlord reply that carries no
+  // text at all (an attachment-only reply, or one whose body the provider stripped),
+  // and a second attempt to read a reply that already has a reading. Neither can be
+  // reached from the offline harness, because both live in the action.
+  const completedReply = afterRetry.find((message) => message.direction === "INBOUND");
+  check(
+    "the earlier reply still has a completed reading to compare against",
+    completedReply?.responseAnalysisStatus === "COMPLETED",
+    completedReply?.responseAnalysisStatus
+  );
+
+  // Section 35 created a case and had its statement processed, and processing a
+  // statement starts research and then assessment for every deduction it
+  // produced. Those run in the background and append to the same prompt log, so
+  // taking the baseline before they settle makes the comparison below fail for a
+  // reason that has nothing to do with empty replies — seen as an intermittent
+  // failure whose message named an *assessment* prompt. Wait for the pipeline the
+  // previous section started to go quiet first.
+  //
+  // The `length > 0` term is what makes this a real wait rather than one that is
+  // already satisfied: an empty list is not a settled pipeline, it is a pipeline
+  // that has not produced its deduction yet.
+  await waitFor("the odd case's pipeline settles", async () => {
+    const rows =
+      (await query("deductions:listByCase", { caseId: oddCaseId, userId: oddUser })).value ?? [];
+    return (
+      rows.length > 0 &&
+      rows.every(
+        (row) =>
+          (row.researchStatus === "COMPLETED" || row.researchStatus === "FAILED") &&
+          (row.assessmentStatus === "COMPLETED" || row.assessmentStatus === "FAILED")
+      )
+    );
+  }, { attempts: 60 });
+
+  // A blank reply must cost no model call. The mock keeps only the last ten
+  // prompts, so an unchanged log is proof that nothing was appended — and the
+  // section below is arranged so that a blank reply, a refused repeat and a retry
+  // of the blank reply are all it does.
+  const callsBeforeBlank = await mockCalls();
+
+  const blankReply = await deliver(
+    signedDelivery(
+      replyEvent(sentCase.inboxId, {
+        messageId: messageId("msg_reply_blank"),
+        threadId: sentCase.threadId,
+        from: "landlord@example.com",
+        subject: `Re: ${letter?.subject ?? "your letter"}`,
+        text: "   ",
+      })
+    )
+  );
+  check("a reply with no text is accepted by the webhook", blankReply.status === 200, JSON.stringify(blankReply.body).slice(0, 120));
+  check("a reply with no text is still classified as a reply", blankReply.body.kind === "REPLY", blankReply.body.kind);
+  check("a reply with no text is attached to the case", blankReply.body.associated === true);
+
+  let blankStored = null;
+  await waitFor("the unreadable reply is marked FAILED", async () => {
+    const messages = (await query("emails:listCommunication", { caseId, userId })).value ?? [];
+    blankStored = messages.find((message) => message._id === blankReply.body.emailId);
+    return blankStored?.responseAnalysisStatus === "FAILED";
+  }, { attempts: 60 });
+
+  check("a reply with no text cannot be read", blankStored?.responseAnalysisStatus === "FAILED", blankStored?.responseAnalysisStatus);
+  check(
+    "the failure names the real cause",
+    /readable text/.test(blankStored?.responseAnalysisError ?? ""),
+    blankStored?.responseAnalysisError
+  );
+  check("the landlord's empty reply is still stored", Boolean(blankStored?._id));
+  check("no reading is invented for an empty reply", blankStored?.responseAnalysis === undefined);
+  check("no reading timestamp is recorded for an empty reply", blankStored?.responseAnalyzedAt === undefined);
+
+  // A reply that cannot be read must not damage the case it belongs to. This is
+  // the same asymmetry rule 18 protects: the reply is correspondence, so it must
+  // never reach extraction, which replaces every deduction on the case.
+  const afterBlank = (await query("cases:get", { caseId, userId })).value;
+  check("the unreadable reply does not rewind the case", afterBlank?.status === "LANDLORD_RESPONDED", afterBlank?.status);
+  check("the unreadable reply does not clear the disputable total", (afterBlank?.potentiallyDisputableAmount ?? 0) > 0);
+  const deductionsAfterBlank = (await query("deductions:listByCase", { caseId, userId })).value ?? [];
+  check(
+    "the unreadable reply does not reset the deductions",
+    deductionsAfterBlank.length > 0 && deductionsAfterBlank.every((row) => row.assessmentStatus === "COMPLETED"),
+    deductionsAfterBlank.map((row) => row.assessmentStatus).join(",")
+  );
+  const earlierReplyAfter = ((await query("emails:listCommunication", { caseId, userId })).value ?? []).find(
+    (message) => message._id === completedReply?._id
+  );
+  check(
+    "an earlier reading survives a later unreadable reply",
+    earlierReplyAfter?.responseAnalysisStatus === "COMPLETED" && Boolean(earlierReplyAfter?.responseAnalysis),
+    earlierReplyAfter?.responseAnalysisStatus
+  );
+
+  // Reading a reply that already has a reading is refused rather than repeated.
+  const repeated = await mutation("responses:retryResponseAnalysis", { emailId: completedReply._id, userId });
+  check("a reply that has already been read cannot be read again", repeated.status === "error", JSON.stringify(repeated).slice(0, 160));
+  check("the refusal says why", /already been read/.test(repeated.errorMessage ?? ""), repeated.errorMessage);
+
+  const afterRepeat = ((await query("emails:listCommunication", { caseId, userId })).value ?? []).find(
+    (message) => message._id === completedReply?._id
+  );
+  check("the refused repeat leaves the reading in place", afterRepeat?.responseAnalysisStatus === "COMPLETED");
+  check(
+    "the refused repeat records nothing on the timeline",
+    ((await query("cases:getTimeline", { caseId, userId })).value ?? []).filter(
+      (event) => event.type === "RESPONSE_ANALYZED"
+    ).length === 1
+  );
+
+  // A reply that genuinely failed is retryable. Unlike the wait in section 33,
+  // this one is not already satisfied when it starts: the retry mutation resets
+  // the row to PENDING before it returns, so waiting for FAILED waits for the
+  // pass to run and fail again — which, for a reply with no text, it always must.
+  const retryBlank = await mutation("responses:retryResponseAnalysis", {
+    emailId: blankReply.body.emailId,
+    userId,
+  });
+  check("a reply that failed to read can be retried", retryBlank.status !== "error", JSON.stringify(retryBlank).slice(0, 160));
+
+  let blankRetried = null;
+  await waitFor("the retried blank reply settles", async () => {
+    const messages = (await query("emails:listCommunication", { caseId, userId })).value ?? [];
+    blankRetried = messages.find((message) => message._id === blankReply.body.emailId);
+    return blankRetried?.responseAnalysisStatus === "FAILED";
+  }, { attempts: 60 });
+
+  check("a retry cannot read a reply that has no text", blankRetried?.responseAnalysisStatus === "FAILED", blankRetried?.responseAnalysisStatus);
+  check("a retry of an unreadable reply never claims success", blankRetried?.responseAnalysis === undefined);
+  check(
+    "a retry of an unreadable reply never claims a reading timestamp",
+    blankRetried?.responseAnalyzedAt === undefined
+  );
+
+  // The point of the guard: a model must never be asked to read an empty message,
+  // because whatever it returned would be invention. Nothing in this section may
+  // have appended a prompt to the provider log — the mock keeps only the last ten,
+  // so a new prompt shifts the array and an unchanged array is proof.
+  const callsAfterBlank = await mockCalls();
+  check(
+    "reading an empty reply, and refusing to re-read a read one, appended no prompt",
+    JSON.stringify(callsAfterBlank) === JSON.stringify(callsBeforeBlank),
+    `newest prompt now: ${JSON.stringify((callsAfterBlank.at(-1)?.system ?? "").slice(0, 60))}`
+  );
+
+  // --- 37. Authentication: the caller is derived, never accepted ---------------------------------
+  //
+  // Everything above ran with `ALLOW_DEMO_IDENTITY=true`, which is how this suite
+  // acts as a user without a session — and that means none of it exercises the
+  // authenticated path, because in demo mode `resolveCaller` returns the claimed id
+  // and the result looks identical either way.
+  //
+  // This section covers what a local backend *can* decide, and is explicit about
+  // what it cannot. It can prove the resolver runs at all (an anonymous caller
+  // with no id is refused, which only happens if `resolveCaller` was reached), and
+  // that a real sign-in completes through the app's own email transport. It cannot
+  // prove that a token is *honoured*, because Convex refuses every token on a local
+  // backend: it fetches the auth provider configuration from the site host before
+  // trusting one, and that request never reaches the local router. Those checks
+  // report SKIP rather than passing on an error response. `npm run verify:auth`
+  // proves the real property against a deployment that accepts tokens.
+
+  // An anonymous caller that supplies no id is refused. This is the check that
+  // proves the resolver actually runs on this deployment rather than the argument
+  // being read straight through.
+  const anonymousNoId = await query("cases:list", {});
+  check(
+    "an anonymous caller with no id is refused",
+    anonymousNoId.status === "error",
+    JSON.stringify(anonymousNoId).slice(0, 140)
+  );
+
+  // An id that is well formed but belongs to another table must not resolve to a
+  // user. Note this is belt-and-braces rather than evidence the resolver ran:
+  // Convex's own `v.id("users")` validator rejects another table's id before the
+  // handler is reached, so this would pass on an un-migrated deployment too. The
+  // check that actually proves the resolver runs is the one above, which only
+  // refuses because demo mode was given no id to accept.
+  const wrongTable = await query("cases:list", { userId: caseId });
+  check(
+    "an id from another table is not accepted as a user id",
+    wrongTable.status === "error",
+    JSON.stringify(wrongTable).slice(0, 140)
+  );
+
+  const signInEmail = `renter-${Date.now()}@clawback.local`;
+  const started = await action("auth:signIn", {
+    provider: "email",
+    params: { email: signInEmail },
+  });
+  check(
+    "a sign-in can be started",
+    started.value?.started === true,
+    JSON.stringify(started).slice(0, 160)
+  );
+
+  const signInToken = await signInCode(signInEmail);
+  check("the sign-in link was delivered through the app's own transport", Boolean(signInToken));
+
+  const verified = await action("auth:signIn", {
+    provider: "email",
+    params: { email: signInEmail, code: signInToken },
+  });
+  const sessionToken = verified.value?.tokens?.token;
+  check(
+    "the code completes the sign-in and returns a session token",
+    typeof sessionToken === "string" && sessionToken.length > 0,
+    JSON.stringify(verified).slice(0, 200)
+  );
+
+  // The three checks below need a deployment that will *accept* a token, and a
+  // local backend will not: Convex rejects every token with
+  // `AuthProviderDiscoveryFailed` because it cannot fetch the auth provider
+  // configuration from the local site host. That is a limitation of the local
+  // backend, not a defect in the app — so these are reported as skipped, never as
+  // passed. `npm run verify:auth` runs the same property against a real
+  // deployment, where the token is actually honoured.
+  if (typeof sessionToken === "string" && sessionToken.length > 0) {
+    const asSession = outcome(await query("cases:list", {}, sessionToken));
+
+    if (asSession.kind === "other") {
+      skip(
+        "a session token is accepted on a function call",
+        `this backend rejected the token before running any function (${asSession.message.slice(0, 70)})`
+      );
+      skip(
+        "a session's identity overrides the userId the caller claims",
+        "needs a deployment that honours tokens — covered by `npm run verify:auth`"
+      );
+    } else {
+      check(
+        "a session token is accepted on a function call",
+        asSession.kind === "ok",
+        `${asSession.kind}: ${String(asSession.message ?? "").slice(0, 120)}`
+      );
+
+      // The property the migration exists for. The demo user owns every case this
+      // suite created; the freshly signed-in user owns none. If the argument were
+      // still trusted, this call would hand back the demo user's cases.
+      const overridden = outcome(await query("cases:list", { userId }, sessionToken));
+      check(
+        "a session's identity overrides the userId the caller claims",
+        overridden.kind === "ok" && (overridden.value ?? []).length === 0,
+        `expected the token owner's empty list, got ${overridden.kind}: ${JSON.stringify(
+          overridden.value ?? overridden.message
+        ).slice(0, 120)}`
+      );
+    }
+
+    // The mirror image, and it runs either way: with no session the claimed id is
+    // exactly what demo mode is for, and it must still work or the rest of this
+    // suite would not run at all.
+    const asDemo = await query("cases:list", { userId });
+    check(
+      "without a session the demo identity still resolves",
+      asDemo.status !== "error" && (asDemo.value ?? []).length > 0,
+      `expected the demo user's cases, got ${JSON.stringify(asDemo).slice(0, 160)}`
+    );
+  }
+
   // --- Report ---------------------------------------------------------------------------
-  console.log(checks.join("\n"));
-  console.log(`\n${checks.length - failed}/${checks.length} e2e checks passed`);
+  console.log(
+    `\n${checks - failed}/${checks} e2e checks passed` +
+      (skipped > 0 ? ` (${skipped} not verified on a local backend — see \`npm run verify:auth\`)` : "")
+  );
   if (failed > 0) process.exit(1);
 }
 
 main().catch((error) => {
-  console.log(checks.join("\n"));
+  // The checks above have already streamed; only the abort itself is new here.
   console.error(
-    `\nABORTED after ${checks.length} checks (${checks.length - failed} passed) — the harness threw.`
+    `\nABORTED after ${checks} checks (${checks - failed} passed) — the harness threw.`
   );
   console.error(error);
   process.exit(1);

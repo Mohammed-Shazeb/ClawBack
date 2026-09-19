@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation } from "./_generated/server";
+import { resolveCaller } from "./caller";
 import { toSafeMessage } from "./errors";
 import { requestStructuredJson } from "./openai";
 import {
@@ -227,16 +228,18 @@ export const analyzeLandlordResponse = internalAction({
 export const retryResponseAnalysis = mutation({
   args: {
     emailId: v.id("emails"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
+
     const email = await ctx.db.get(args.emailId);
     if (!email) throw new Error("Message not found");
     if (!email.caseId) throw new Error("This message is not attached to a case");
 
     const caseData = await ctx.db.get(email.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     if (!email.isReply) throw new Error("Only a landlord reply can be analyzed");
     if (email.responseAnalysisStatus === "COMPLETED") {

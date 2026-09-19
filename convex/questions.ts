@@ -39,3 +39,48 @@ export function buildResearchQuestion({
     `requirements apply to that deduction?`
   );
 }
+
+/** Short keyword phrasing of the same category, for a search-engine query. */
+const CATEGORY_KEYWORDS: Record<DeductionCategory, string> = {
+  ORDINARY_WEAR: "ordinary wear and tear",
+  TENANT_DAMAGE: "tenant damage",
+  FEE: "administrative fee",
+  UNKNOWN: "",
+};
+
+/**
+ * A short keyword query over exactly the same stored facts as
+ * `buildResearchQuestion`.
+ *
+ * The prose question above is precise and auditable, but a real search engine
+ * returns very few results for it — and often none on an official host.
+ * Measured against the live provider on one California deduction: the prose form
+ * returned 4 results with no government host at all, while this keyword form
+ * returned 10 including `selfhelp.courts.ca.gov`. The mock never showed this
+ * because it answers any query with official sources.
+ *
+ * Both queries are filtered by the same `classifyAuthority` rule, so this
+ * improves recall of official sources without moving the OFFICIAL guarantee:
+ * a non-government host is still non-official, whichever query surfaced it.
+ */
+export function buildResearchKeywordQuery({
+  jurisdiction,
+  description,
+  category,
+}: {
+  jurisdiction: string;
+  description: string;
+  category?: DeductionCategory;
+}): string {
+  const keyword = category ? (CATEGORY_KEYWORDS[category] ?? "") : "";
+  return [
+    jurisdiction,
+    "security deposit",
+    description,
+    "deduction",
+    keyword,
+    "official rules",
+  ]
+    .filter((part) => part.trim() !== "")
+    .join(" ");
+}

@@ -11,6 +11,9 @@
 import type * as agentmail from "../agentmail.js";
 import type * as assessment from "../assessment.js";
 import type * as assessments from "../assessments.js";
+import type * as auth from "../auth.js";
+import type * as authEmail from "../authEmail.js";
+import type * as caller from "../caller.js";
 import type * as cases from "../cases.js";
 import type * as deductions from "../deductions.js";
 import type * as emails from "../emails.js";
@@ -42,6 +45,9 @@ declare const fullApi: ApiFromModules<{
   agentmail: typeof agentmail;
   assessment: typeof assessment;
   assessments: typeof assessments;
+  auth: typeof auth;
+  authEmail: typeof authEmail;
+  caller: typeof caller;
   cases: typeof cases;
   deductions: typeof deductions;
   emails: typeof emails;

@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalAction, internalMutation, internalQuery, mutation } from "./_generated/server";
 import { sendCaseMessage } from "./agentmail";
+import { resolveCaller } from "./caller";
 import { toSafeMessage } from "./errors";
 import {
   decideSendClaim,
@@ -104,10 +105,11 @@ export const getSendContext = internalQuery({
 export const sendLetter = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    const caseData = await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    const caseData = await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const letter = await resolveLiveLetter(ctx, args.caseId);
 
@@ -393,11 +395,12 @@ export const recordSendFailure = internalMutation({
 export const setLandlordEmail = mutation({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
     landlordEmail: v.string(),
   },
   handler: async (ctx, args) => {
-    await loadCaseForOwner(ctx, args.caseId, args.userId);
+    const callerId = await resolveCaller(ctx, args.userId);
+    await loadCaseForOwner(ctx, args.caseId, callerId);
 
     const trimmed = args.landlordEmail.trim();
     if (!isSendableEmail(trimmed)) {

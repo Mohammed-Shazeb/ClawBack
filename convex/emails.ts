@@ -4,7 +4,8 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { internalAction, internalMutation, mutation, query } from "./_generated/server";
-import { fetchInboundMessageBody } from "./agentmail";
+import { fetchInboundImageAttachment, fetchInboundMessageBody } from "./agentmail";
+import { resolveCaller } from "./caller";
 import { toSafeMessage } from "./errors";
 import {
   buildStatementUserPrompt,
@@ -54,12 +55,13 @@ const PRE_RESPONSE_STATUSES = [
 export const listByCase = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
     const caseData = await ctx.db.get(args.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     const emails = await ctx.db
       .query("emails")
@@ -93,12 +95,13 @@ export const listByCase = query({
 export const listCommunication = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
     const caseData = await ctx.db.get(args.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     const emails = await ctx.db
       .query("emails")
@@ -410,6 +413,7 @@ export const claimForProcessing = internalMutation({
       statement: email.body,
       inboxId: email.inboxId,
       externalMessageId: email.externalMessageId,
+      attachments: email.attachments ?? [],
     };
   },
 });
@@ -434,14 +438,23 @@ export const processInboundEmail = internalAction({
 
     try {
       const statement = await resolveStatementText(ctx, args.emailId, claim);
+      const image = await resolveStatementImage(claim);
 
-      if (!statement.trim()) {
+      if (!statement.trim() && !image) {
         throw new Error("The email did not contain any readable statement text.");
       }
 
       const raw = await requestStructuredJson({
         system: EXTRACTION_SYSTEM_PROMPT,
-        user: buildStatementUserPrompt({ subject: claim.subject, body: statement }),
+        user: image
+          ? [
+              {
+                type: "text",
+                text: buildStatementUserPrompt({ subject: claim.subject, body: statement }),
+              },
+              { type: "image_url", image_url: { url: image } },
+            ]
+          : buildStatementUserPrompt({ subject: claim.subject, body: statement }),
         schemaName: DEPOSIT_STATEMENT_SCHEMA_NAME,
         jsonSchema: depositStatementJsonSchema,
       });
@@ -679,16 +692,18 @@ export const recordStatementBody = internalMutation({
 export const retryProcessing = mutation({
   args: {
     emailId: v.id("emails"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
+
     const email = await ctx.db.get(args.emailId);
     if (!email) throw new Error("Email not found");
     if (!email.caseId) throw new Error("This email is not attached to a case");
 
     const caseData = await ctx.db.get(email.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     if (email.processingStatus !== "FAILED") {
       throw new Error("Only a failed statement can be analyzed again");
@@ -730,6 +745,30 @@ async function resolveStatementText(
   await ctx.runMutation(internal.emails.recordStatementBody, { emailId, body });
 
   return body;
+}
+
+async function resolveStatementImage(
+  claim: {
+    inboxId?: string;
+    externalMessageId?: string;
+    attachments: Array<{
+      attachmentId?: string;
+      contentType?: string;
+    }>;
+  }
+): Promise<string | null> {
+  const imageAttachment = claim.attachments.find(
+    (attachment) =>
+      attachment.attachmentId && attachment.contentType?.toLowerCase().startsWith("image/")
+  );
+  if (!imageAttachment?.attachmentId || !claim.inboxId || !claim.externalMessageId) return null;
+
+  return fetchInboundImageAttachment({
+    inboxId: claim.inboxId,
+    messageId: claim.externalMessageId,
+    attachmentId: imageAttachment.attachmentId,
+    contentType: imageAttachment.contentType,
+  });
 }
 
 function roundCurrency(value: number): number {

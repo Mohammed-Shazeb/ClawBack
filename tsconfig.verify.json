@@ -6,7 +6,12 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "target": "es2022",
-    "outDir": ".verify"
+    "outDir": ".verify",
+    "paths": {
+      "@/*": ["./*"],
+      "@convex-dev/auth/server": ["./node_modules/@convex-dev/auth/dist/server/index.d.ts"],
+      "@convex-dev/auth/providers/*": ["./node_modules/@convex-dev/auth/dist/providers/*.d.ts"]
+    }
   },
   "include": [
     "scripts/**/*.ts",
@@ -14,6 +19,7 @@
     "convex/validators.ts",
     "convex/errors.ts",
     "convex/agentmail.ts",
+    "convex/caller.ts",
     "convex/svix.ts",
     "convex/firecrawl.ts",
     "convex/questions.ts",

@@ -1,16 +1,18 @@
 import { v } from "convex/values";
+import { resolveCaller } from "./caller";
 import { query } from "./_generated/server";
 
 /** The official sources research stored for a case, oldest first. */
 export const listByCase = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
     const caseData = await ctx.db.get(args.caseId);
     if (!caseData) throw new Error("Case not found");
-    if (caseData.userId !== args.userId) throw new Error("Unauthorized");
+    if (caseData.userId !== callerId) throw new Error("Unauthorized");
 
     return await ctx.db
       .query("sources")

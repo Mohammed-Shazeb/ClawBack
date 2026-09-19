@@ -4,18 +4,18 @@ import type { Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { action, internalMutation, mutation, query } from "./_generated/server";
 import { caseInboxLocalPart, createCaseInbox } from "./agentmail";
+import { resolveCaller, resolveCallerInAction } from "./caller";
 import { toSafeMessage } from "./errors";
 
 export const create = mutation({
   args: {
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
     jurisdiction: v.string(),
     depositAmount: v.number(),
     totalDeductions: v.number(),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("User not found");
+    const callerId = await resolveCaller(ctx, args.userId);
     if (args.depositAmount < 0 || args.totalDeductions < 0) {
       throw new Error("Amounts cannot be negative");
     }
@@ -23,7 +23,7 @@ export const create = mutation({
     const now = Date.now();
 
     const caseId = await ctx.db.insert("cases", {
-      userId: args.userId,
+      userId: callerId,
       jurisdiction: args.jurisdiction,
       depositAmount: args.depositAmount,
       totalDeductions: args.totalDeductions,
@@ -46,12 +46,14 @@ export const create = mutation({
 
 export const list = query({
   args: {
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
+
     const cases = await ctx.db
       .query("cases")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", callerId))
       .order("desc")
       .collect();
 
@@ -62,16 +64,17 @@ export const list = query({
 export const get = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
     const caseData = await ctx.db.get(args.caseId);
 
     if (!caseData) {
       return null;
     }
 
-    if (caseData.userId !== args.userId) {
+    if (caseData.userId !== callerId) {
       throw new Error("Unauthorized");
     }
 
@@ -82,16 +85,17 @@ export const get = query({
 export const getTimeline = query({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
+    const callerId = await resolveCaller(ctx, args.userId);
     const caseData = await ctx.db.get(args.caseId);
 
     if (!caseData) {
       throw new Error("Case not found");
     }
 
-    if (caseData.userId !== args.userId) {
+    if (caseData.userId !== callerId) {
       throw new Error("Unauthorized");
     }
 
@@ -113,13 +117,20 @@ export const getTimeline = query({
  */
 export const createWithInbox = action({
   args: {
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
     jurisdiction: v.string(),
     depositAmount: v.number(),
     totalDeductions: v.number(),
   },
   handler: async (ctx, args): Promise<Id<"cases">> => {
-    const caseId = await ctx.runMutation(api.cases.create, args);
+    // Resolve here so the id handed to the mutation is already derived, never
+    // the client's claim; the mutation re-resolves and reaches the same answer.
+    const callerId = await resolveCallerInAction(ctx, args.userId);
+
+    const caseId = await ctx.runMutation(api.cases.create, {
+      ...args,
+      userId: callerId,
+    });
 
     // Awaited: an unawaited operation in an action may never run, which would
     // leave the case without its inbox.
@@ -133,12 +144,14 @@ export const createWithInbox = action({
 export const retryInboxProvision = action({
   args: {
     caseId: v.id("cases"),
-    userId: v.id("users"),
+    userId: v.optional(v.id("users")),
   },
   handler: async (ctx, args): Promise<string | null> => {
+    const callerId = await resolveCallerInAction(ctx, args.userId);
+
     const caseData = await ctx.runQuery(api.cases.get, {
       caseId: args.caseId,
-      userId: args.userId,
+      userId: callerId,
     });
 
     if (!caseData) throw new Error("Case not found");
