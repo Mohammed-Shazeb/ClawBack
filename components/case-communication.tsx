@@ -2,11 +2,19 @@
 
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  ChevronDown,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { formatCurrency, formatDateTime } from "@/lib/format";
+import { Badge, MicroLabel, Panel, PanelHead } from "./ui/primitives";
 
 type Analysis = {
   summary: string;
@@ -45,94 +53,110 @@ export function CaseCommunication({
 
   if (messages === undefined) {
     return (
-      <section className="rounded-xl border border-[#e4e7eb] bg-white">
+      <Panel as="section" aria-label="Communication">
         <CommunicationHeader />
-        <p className="p-5 text-sm text-[#89929b]">Loading messages…</p>
-      </section>
+        <p className="px-5 py-4 text-xs text-ink-muted">Loading messages…</p>
+      </Panel>
     );
   }
 
   return (
-    <section className="rounded-xl border border-[#e4e7eb] bg-white">
+    <Panel as="section" aria-label="Communication">
       <CommunicationHeader />
 
       {messages.length === 0 ? (
-        <div className="p-5">
-          <p className="text-sm text-[#4a5660]">No messages yet.</p>
-          <p className="mt-1 text-xs leading-5 text-[#89929b]">
+        <div className="px-5 py-5">
+          <p className="text-[13px] text-ink">No messages yet.</p>
+          <p className="mt-1.5 text-xs leading-5 text-ink-secondary">
             Approve the dispute letter and send it. Anything the landlord sends back will appear
             here, attached to this case.
           </p>
         </div>
       ) : (
-        <div className="divide-y divide-[#edf0f2]">
+        <ol className="divide-y divide-line">
           {messages.map((message) => {
             const outbound = message.direction === "OUTBOUND";
             const at = message.sentAt ?? message.receivedAt ?? message.createdAt;
             const isOpen = expanded[message._id] ?? !outbound;
 
             return (
-              <div key={message._id} className="p-5">
+              <li key={message._id} className="px-5 py-4">
                 <div className="flex items-start gap-3">
                   <span
-                    className={`mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full ${
-                      outbound ? "bg-[#edf4f1] text-[#235b4c]" : "bg-[#eef1f6] text-[#3f5673]"
+                    aria-hidden="true"
+                    className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border ${
+                      outbound
+                        ? "border-accent-line bg-accent-soft text-accent"
+                        : "border-line bg-surface-muted text-ink-secondary"
                     }`}
                   >
-                    {outbound ? <ArrowUpRight size={14} /> : <ArrowDownLeft size={14} />}
+                    {outbound ? <ArrowUpRight size={12} /> : <ArrowDownLeft size={12} />}
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">
-                      {outbound ? "You → Landlord" : "Landlord → You"}
-                    </p>
-                    <p className="mt-0.5 text-xs text-[#89929b]">{formatDateTime(at)}</p>
-                    <p className="mt-1.5 truncate text-xs text-[#4a5660]">{message.subject}</p>
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                      <p className="text-[13px] font-medium text-ink">
+                        {outbound ? "You → Landlord" : "Landlord → You"}
+                      </p>
+                      <p className="text-[11px] text-ink-muted">{formatDateTime(at)}</p>
+                    </div>
 
-                    <div className="mt-2">
+                    <p className="mt-1 truncate text-[11px] text-ink-secondary">{message.subject}</p>
+
+                    <div className="mt-1.5">
                       <DirectionStatus message={message} />
                     </div>
 
-                    {!outbound ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpanded((current) => ({ ...current, [message._id]: !isOpen }))
-                          }
-                          className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-[#235b4c] hover:underline"
-                        >
-                          <ChevronDown
-                            size={13}
-                            className={isOpen ? "rotate-180 transition-transform" : "transition-transform"}
-                          />
-                          {isOpen ? "Hide response" : "View response"}
-                        </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpanded((current) => ({ ...current, [message._id]: !isOpen }))
+                      }
+                      aria-expanded={isOpen}
+                      className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-accent transition-colors hover:underline"
+                    >
+                      <ChevronDown
+                        size={12}
+                        aria-hidden="true"
+                        className={`transition-transform ${isOpen ? "rotate-180" : ""}`}
+                      />
+                      {outbound
+                        ? isOpen
+                          ? "Hide what was sent"
+                          : "View what was sent"
+                        : isOpen
+                          ? "Hide response"
+                          : "View response"}
+                    </button>
 
-                        {isOpen ? (
-                          <ResponseDetail messageId={message._id} userId={userId} message={message} />
-                        ) : null}
-                      </>
+                    {isOpen ? (
+                      outbound ? (
+                        <SentDetail message={message} />
+                      ) : (
+                        <ResponseDetail
+                          messageId={message._id}
+                          userId={userId}
+                          message={message}
+                        />
+                      )
                     ) : null}
                   </div>
                 </div>
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ol>
       )}
-    </section>
+    </Panel>
   );
 }
 
 function CommunicationHeader() {
   return (
-    <div className="border-b border-[#edf0f2] px-5 py-4">
-      <h2 className="text-sm font-semibold">Communication</h2>
-      <p className="mt-1 text-xs text-[#89929b]">
-        The dispute sent to the landlord, and their replies
-      </p>
-    </div>
+    <PanelHead
+      title="Communication"
+      description="The dispute sent to the landlord, and their replies"
+    />
   );
 }
 
@@ -150,33 +174,43 @@ type Message = {
 function DirectionStatus({ message }: { message: Message }) {
   if (message.direction === "OUTBOUND") {
     if (message.sendStatus === "SENT") {
-      return <p className="text-xs text-[#235b4c]">Dispute letter sent</p>;
+      return (
+        <Badge tone="accent">
+          <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
+          Dispute letter sent
+        </Badge>
+      );
     }
     if (message.sendStatus === "SENDING") {
       return (
-        <p className="flex items-center gap-1.5 text-xs text-[#69737d]">
-          <Loader2 size={12} className="animate-spin" /> Sending…
+        <p className="flex items-center gap-1.5 text-[11px] text-ink-secondary">
+          <Loader2 size={11} className="animate-spin" aria-hidden="true" /> Sending…
         </p>
       );
     }
     if (message.sendStatus === "FAILED") {
       return (
-        <p className="flex items-start gap-1.5 text-xs leading-5 text-[#9c4338]">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+        <p className="flex items-start gap-1.5 text-[11px] leading-5 text-danger">
+          <AlertTriangle size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
           {message.sendError ?? "Sending failed."} You can retry from the dispute letter above.
         </p>
       );
     }
-    return <p className="text-xs text-[#89929b]">Send not started</p>;
+    return <p className="text-[11px] text-ink-muted">Send not started</p>;
   }
 
   if (message.responseAnalysisStatus === "COMPLETED" && message.responseAnalysis) {
-    return <p className="text-xs text-[#3f5673]">Response received and read</p>;
+    return (
+      <Badge tone="accent">
+        <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
+        Response received and read
+      </Badge>
+    );
   }
   if (message.responseAnalysisStatus === "FAILED") {
     return (
-      <p className="flex items-start gap-1.5 text-xs leading-5 text-[#8a6d2f]">
-        <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+      <p className="flex items-start gap-1.5 text-[11px] leading-5 text-attention">
+        <AlertTriangle size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
         Response received. It could not be read automatically.
       </p>
     );
@@ -186,13 +220,19 @@ function DirectionStatus({ message }: { message: Message }) {
     message.responseAnalysisStatus === "ANALYZING"
   ) {
     return (
-      <p className="flex items-center gap-1.5 text-xs text-[#69737d]">
-        <Loader2 size={12} className="animate-spin" /> Response received. Reading it…
+      <p className="flex items-center gap-1.5 text-[11px] text-ink-secondary">
+        <Loader2 size={11} className="animate-spin" aria-hidden="true" /> Response received.
+        Reading it…
       </p>
     );
   }
 
-  return <p className="text-xs text-[#3f5673]">Response received</p>;
+  return (
+    <Badge tone="neutral">
+      <span className="size-1.5 rounded-full bg-ink-muted" aria-hidden="true" />
+      Response received
+    </Badge>
+  );
 }
 
 function ResponseDetail({
@@ -213,21 +253,17 @@ function ResponseDetail({
   return (
     <div className="mt-3 space-y-3">
       {/* The landlord's own words, always shown as written. */}
-      <div className="rounded-lg border border-[#e4e7eb] bg-[#fbfcfc] px-4 py-3">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#a0a8ae]">
-          What the landlord wrote
-        </p>
-        <p className="mt-2 whitespace-pre-wrap text-[13px] leading-6 text-[#26323b]">
+      <div className="rounded-md border border-line bg-surface-muted px-4 py-3">
+        <MicroLabel>What the landlord wrote</MicroLabel>
+        <p className="mt-2 whitespace-pre-wrap text-[13px] leading-6 text-ink">
           {message.body || "This message had no readable text."}
         </p>
       </div>
 
       {analysis ? (
-        <div className="rounded-lg border border-[#e4e7eb] px-4 py-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#a0a8ae]">
-            What the reply appears to say
-          </p>
-          <p className="mt-2 text-[13px] leading-6 text-[#26323b]">{analysis.summary}</p>
+        <div className="rounded-md border border-line bg-surface px-4 py-3">
+          <MicroLabel>What the reply appears to say</MicroLabel>
+          <p className="mt-2 text-[13px] leading-6 text-ink">{analysis.summary}</p>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
             <Flag on={analysis.acceptsDispute} label="Accepts the dispute" />
@@ -256,7 +292,7 @@ function ResponseDetail({
             <ListDetail label="Left unclear" items={analysis.missingInformation} />
           ) : null}
 
-          <p className="mt-3 border-t border-[#edf0f2] pt-2.5 text-[11px] leading-5 text-[#89929b]">
+          <p className="mt-3 border-t border-line pt-2.5 text-[11px] leading-5 text-ink-muted">
             This is an automatic reading of the message, not legal advice and not a statement
             about your rights.
           </p>
@@ -264,8 +300,8 @@ function ResponseDetail({
       ) : null}
 
       {message.responseAnalysisStatus === "FAILED" ? (
-        <div className="rounded-lg border border-[#e6dfc9] bg-[#fffdf6] px-4 py-3">
-          <p className="text-xs leading-5 text-[#8a6d2f]">
+        <div className="rounded-md border border-attention-line bg-attention-soft px-4 py-3">
+          <p className="text-[11px] leading-5 text-attention">
             {message.responseAnalysisError ??
               "This reply could not be read automatically. The message itself is stored above."}
           </p>
@@ -286,15 +322,39 @@ function ResponseDetail({
                   setBusy(false);
                 }
               }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-[#e4e7eb] bg-white px-2.5 py-1.5 text-xs font-medium text-[#35414b] hover:border-[#cfd6da] disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-3 text-[11px] font-semibold text-ink transition-colors hover:border-line-strong disabled:opacity-50"
             >
-              <RefreshCw size={12} />
+              <RefreshCw size={11} aria-hidden="true" />
               {busy ? "Retrying…" : "Try reading it again"}
             </button>
           </div>
-          {error ? <p className="mt-2 text-[11px] text-[#9c4338]">{error}</p> : null}
+          {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The exact message that left the building.
+ *
+ * A sent dispute is immutable, but the letter section above always shows the
+ * *current* letter — which, after a revision, is no longer what the landlord
+ * received. This renders the message as it was stored at send time, never
+ * re-rendered from the letter, so the record of what was sent survives a
+ * revision.
+ */
+function SentDetail({ message }: { message: Message }) {
+  return (
+    <div className="mt-3 rounded-md border border-line bg-surface-muted px-4 py-3">
+      <MicroLabel>What was sent</MicroLabel>
+      <p className="mt-2 whitespace-pre-wrap text-[13px] leading-6 text-ink">
+        {message.body || "This message had no stored text."}
+      </p>
+      <p className="mt-3 border-t border-line pt-2.5 text-[11px] leading-5 text-ink-muted">
+        The message exactly as it was sent. A sent dispute cannot be edited, so this remains the
+        record of what the landlord received even after a new draft.
+      </p>
     </div>
   );
 }
@@ -302,20 +362,14 @@ function ResponseDetail({
 function Flag({ on, label }: { on: boolean; label: string }) {
   if (!on) return null;
 
-  return (
-    <span className="inline-flex items-center rounded-full bg-[#eef1f6] px-2.5 py-1 text-[11px] font-medium text-[#3f5673]">
-      {label}
-    </span>
-  );
+  return <Badge tone="neutral">{label}</Badge>;
 }
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="mt-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#a0a8ae]">
-        {label}
-      </p>
-      <p className="mt-1 text-xs leading-5 text-[#4a5660]">{value}</p>
+      <MicroLabel>{label}</MicroLabel>
+      <p className="mt-1 text-[11px] leading-5 text-ink-secondary">{value}</p>
     </div>
   );
 }
@@ -323,12 +377,11 @@ function Detail({ label, value }: { label: string; value: string }) {
 function ListDetail({ label, items }: { label: string; items: string[] }) {
   return (
     <div className="mt-3">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#a0a8ae]">
-        {label}
-      </p>
-      <ul className="mt-1 space-y-1">
+      <MicroLabel>{label}</MicroLabel>
+      <ul className="mt-1.5 space-y-1">
         {items.map((item) => (
-          <li key={item} className="text-xs leading-5 text-[#4a5660]">
+          <li key={item} className="flex gap-2 text-[11px] leading-5 text-ink-secondary">
+            <span aria-hidden="true" className="mt-1.5 size-1 shrink-0 rounded-full bg-ink-muted" />
             {item}
           </li>
         ))}

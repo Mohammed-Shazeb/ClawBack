@@ -2,22 +2,40 @@
 
 import Link from "next/link";
 import { useQuery } from "convex/react";
-import { ArrowLeft, Clock3 } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { caseReference, caseStatus } from "@/lib/case-status";
 import { formatDateTime } from "@/lib/format";
 import { AppShell } from "./app-shell";
 import { CaseCommunication } from "./case-communication";
 import { CaseDeductions } from "./case-deductions";
 import { CaseEmailAddress } from "./case-email-address";
 import { CaseFinances } from "./case-finances";
+import { CaseInvestigation } from "./case-investigation";
 import { CaseLetter } from "./case-letter";
+import { CaseSectionNav } from "./case-section-nav";
 import { CaseStatement } from "./case-statement";
-import { useDemoUser } from "./demo-user";
+import { Badge } from "./ui/primitives";
 
-export function CaseOverview({ caseId }: { caseId: string }) {
-  const { userId, error: userError } = useDemoUser();
+/**
+ * `userId` is a prop rather than something this component looks up.
+ *
+ * Two reasons. It keeps the identity decision in one place — the page's gate —
+ * instead of every screen resolving it for itself; and it makes the component
+ * renderable offline with a fixed id, which is how the UI harness verifies it
+ * without a Convex connection. The queries still pass `"skip"` while the id is
+ * null, because the type is honestly nullable: the gate guarantees a user, but
+ * one render happens before the row lands.
+ */
+export function CaseOverview({
+  caseId,
+  userId,
+}: {
+  caseId: string;
+  userId: Id<"users"> | null;
+}) {
   const id = caseId as Id<"cases">;
 
   const caseData = useQuery(api.cases.get, userId ? { caseId: id, userId } : "skip");
@@ -25,15 +43,19 @@ export function CaseOverview({ caseId }: { caseId: string }) {
   const emails = useQuery(api.emails.listByCase, userId ? { caseId: id, userId } : "skip");
   const deductions = useQuery(api.deductions.listByCase, userId ? { caseId: id, userId } : "skip");
   const sources = useQuery(api.sources.listByCase, userId ? { caseId: id, userId } : "skip");
+  const letter = useQuery(api.letters.getForCase, userId ? { caseId: id, userId } : "skip");
 
   if (caseData === null) {
     return (
       <AppShell>
-        <div className="mx-auto max-w-6xl px-5 py-8">
+        <div className="mx-auto max-w-6xl px-5 py-10 sm:px-8">
           <BackLink />
-          <p className="mt-8 rounded-lg border border-[#e6c9c5] bg-[#fff7f6] px-4 py-3 text-sm text-[#9c4338]">
-            Case not found or you do not have access to it.
-          </p>
+          <div className="mt-8 rounded-lg border border-danger-line bg-danger-soft px-4 py-3.5">
+            <p className="text-[13px] font-medium text-danger">Case not available</p>
+            <p className="mt-1 text-xs leading-5 text-danger">
+              This case does not exist, or it belongs to a different account.
+            </p>
+          </div>
         </div>
       </AppShell>
     );
@@ -43,108 +65,146 @@ export function CaseOverview({ caseId }: { caseId: string }) {
     emails?.some(
       (email) => email.processingStatus === "RECEIVED" || email.processingStatus === "PROCESSING"
     ) ?? false;
-  const assessed =
-    deductions?.some((deduction) => deduction.assessmentStatus === "COMPLETED") ?? false;
+
+  const assessed = deductions?.some((deduction) => deduction.assessmentStatus === "COMPLETED") ?? false;
+  const statusCopy = caseData ? caseStatus(caseData.status) : undefined;
+
+  /*
+   * Derived from the stored deduction rows, never from a model total — the same
+   * rule the case totals follow. `likelyValidAmount` is the other half of the
+   * deposit decomposition: what the evidence supported, as opposed to what it
+   * did not.
+   */
+  const assessedCount =
+    deductions?.filter((deduction) => deduction.assessmentStatus === "COMPLETED").length ?? 0;
+  const likelyValidAmount = (deductions ?? [])
+    .filter((deduction) => deduction.assessment === "LIKELY_VALID")
+    .reduce((sum, deduction) => sum + (deduction.amount ?? 0), 0);
 
   return (
     <AppShell>
       <div className="mx-auto max-w-6xl px-5 py-8 sm:px-8 lg:px-10 lg:py-10">
         <BackLink />
 
-        {userError ? (
-          <p className="mt-8 rounded-lg border border-[#e6c9c5] bg-[#fff7f6] px-4 py-3 text-sm text-[#9c4338]">
-            {userError}
-          </p>
-        ) : caseData === undefined ? (
-          <p className="mt-8 text-sm text-[#89929b]">Loading case…</p>
+        {caseData === undefined ? (
+          <CaseSkeleton />
         ) : (
-          <>
-            <header className="mt-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#82908a]">
-                  Case {caseId.slice(-6).toUpperCase()}
-                </p>
-                <h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">
-                  {caseData.jurisdiction} recovery
+          <div className="animate-fade">
+            {/* --- Case identity --- */}
+            <header className="mt-7 flex flex-wrap items-end justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] font-medium uppercase tracking-[0.14em] text-ink-muted">
+                  <span>{caseReference(caseId)}</span>
+                  <span aria-hidden="true" className="text-line-strong">
+                    /
+                  </span>
+                  <span>{caseData.jurisdiction}</span>
+                </div>
+                <h1 className="mt-2 text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-ink">
+                  Security deposit dispute
                 </h1>
-                <p className="mt-2 text-sm text-[#69737d]">
-                  Created {formatDateTime(caseData.createdAt)}
+                <p className="mt-1.5 text-xs text-ink-muted">
+                  Opened {formatDateTime(caseData.createdAt)}
                 </p>
               </div>
-              <StatusPill status={caseData.status} isAnalyzing={isAnalyzing} />
+
+              <div className="flex items-center gap-3">
+                {isAnalyzing ? (
+                  <span className="flex items-center gap-1.5 text-[11px] text-ink-secondary">
+                    <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-hidden="true" />
+                    Working
+                  </span>
+                ) : null}
+                {statusCopy ? <Badge tone={statusCopy.tone}>{statusCopy.label}</Badge> : null}
+              </div>
             </header>
 
-            <div className="mt-8">
+            <CaseSectionNav />
+
+            {/* --- The money --- */}
+            <div id="case-money" className="mt-7 scroll-mt-28">
               <CaseFinances
                 depositAmount={caseData.depositAmount}
                 totalDeductions={caseData.totalDeductions}
                 potentiallyDisputableAmount={caseData.potentiallyDisputableAmount}
+                likelyValidAmount={likelyValidAmount}
+                deductionCount={deductions?.length ?? 0}
+                assessedCount={assessedCount}
                 assessed={assessed}
               />
             </div>
 
-            <div className="mt-8 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-              <div className="space-y-6">
-                <CaseLetter
-                  caseId={caseId}
-                  userId={userId as Id<"users">}
-                  potentiallyDisputableAmount={caseData.potentiallyDisputableAmount}
-                  landlordEmail={caseData.landlordEmail}
-                />
-                <CaseCommunication caseId={caseId} userId={userId as Id<"users">} />
-                <CaseDeductions
-                  userId={userId as Id<"users">}
-                  deductions={deductions}
-                  sources={sources}
-                  isAnalyzing={isAnalyzing}
-                />
-                <CaseEmailAddress
-                  caseId={caseId}
-                  userId={userId as Id<"users">}
-                  inboxId={caseData.inboxId}
-                  inboxStatus={caseData.inboxStatus}
-                  inboxError={caseData.inboxError}
-                />
-                <CaseStatement
-                  userId={userId as Id<"users">}
-                  emails={emails}
-                  deductionCount={deductions?.length ?? 0}
-                />
+            {/* --- The evidence, given the room it needs --- */}
+            <div id="case-deductions" className="mt-6 scroll-mt-28">
+              <CaseDeductions
+                userId={userId as Id<"users">}
+                deductions={deductions}
+                sources={sources}
+                isAnalyzing={isAnalyzing}
+              />
+            </div>
+
+            {/* --- Action and correspondence, with the investigation beside them --- */}
+            <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1.12fr)_minmax(0,0.88fr)]">
+              <div className="min-w-0 space-y-6">
+                <div id="case-letter" className="scroll-mt-28">
+                  <CaseLetter
+                    caseId={caseId}
+                    userId={userId as Id<"users">}
+                    potentiallyDisputableAmount={caseData.potentiallyDisputableAmount}
+                    landlordEmail={caseData.landlordEmail}
+                    deductions={(deductions ?? []).map((deduction) => ({
+                      _id: deduction._id,
+                      description: deduction.description,
+                      amount: deduction.amount,
+                      assessment: deduction.assessment,
+                      potentiallyDisputableAmount: deduction.potentiallyDisputableAmount,
+                      assessmentSourceIds: deduction.assessmentSourceIds,
+                    }))}
+                  />
+                </div>
+
+                <div id="case-communication" className="scroll-mt-28">
+                  <CaseCommunication caseId={caseId} userId={userId as Id<"users">} />
+                </div>
               </div>
 
-              <div className="space-y-6">
-                <section className="rounded-xl border border-[#e4e7eb] bg-white">
-                  <div className="border-b border-[#edf0f2] px-5 py-4">
-                    <h2 className="text-sm font-semibold">Timeline</h2>
-                    <p className="mt-1 text-xs text-[#89929b]">
-                      Actions recorded for this case
-                    </p>
-                  </div>
-                  {timeline === undefined ? (
-                    <p className="p-5 text-sm text-[#89929b]">Loading timeline…</p>
-                  ) : timeline.length === 0 ? (
-                    <p className="p-5 text-sm text-[#89929b]">No activity recorded yet.</p>
-                  ) : (
-                    <div className="p-5">
-                      {timeline.map((event) => (
-                        <div key={event._id} className="relative flex gap-3 pb-6 last:pb-0">
-                          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[#edf4f1] text-[#235b4c]">
-                            <Clock3 size={14} />
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium">{event.description}</p>
-                            <p className="mt-1 text-xs text-[#89929b]">
-                              {formatDateTime(event.createdAt)}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
+              <div className="min-w-0 space-y-6">
+                <div id="case-timeline" className="scroll-mt-28">
+                  <CaseInvestigation
+                    input={{
+                      jurisdiction: caseData.jurisdiction,
+                      status: caseData.status,
+                      deductionCount: deductions?.length ?? 0,
+                      sourceCount: sources?.length ?? 0,
+                      connectedSourceCount:
+                        sources?.filter((source) => Boolean(source.deductionId)).length ?? 0,
+                      assessedCount,
+                      letterExists: Boolean(letter),
+                      letterReady: letter?.pipelineStatus === "READY",
+                      letterStatus: letter?.status,
+                      timeline: timeline ?? [],
+                    }}
+                  />
+                </div>
+
+                <div id="case-statement" className="scroll-mt-28 space-y-6">
+                  <CaseEmailAddress
+                    caseId={caseId}
+                    userId={userId as Id<"users">}
+                    inboxId={caseData.inboxId}
+                    inboxStatus={caseData.inboxStatus}
+                    inboxError={caseData.inboxError}
+                  />
+                  <CaseStatement
+                    userId={userId as Id<"users">}
+                    emails={emails}
+                    deductionCount={deductions?.length ?? 0}
+                  />
+                </div>
               </div>
             </div>
-          </>
+          </div>
         )}
       </div>
     </AppShell>
@@ -155,20 +215,24 @@ function BackLink() {
   return (
     <Link
       href="/cases"
-      className="inline-flex items-center gap-2 text-sm font-medium text-[#69737d] hover:text-[#173f35]"
+      className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-secondary transition-colors hover:text-ink"
     >
-      <ArrowLeft size={16} /> All cases
+      <ArrowLeft size={14} aria-hidden="true" /> All cases
     </Link>
   );
 }
 
-function StatusPill({ status, isAnalyzing }: { status: string; isAnalyzing: boolean }) {
+/** A quiet placeholder shaped like the real page, so loading does not jump. */
+function CaseSkeleton() {
   return (
-    <span className="inline-flex w-fit items-center gap-2 rounded-full bg-[#edf4f1] px-3 py-1.5 text-xs font-semibold text-[#235b4c]">
-      {isAnalyzing ? (
-        <span className="size-1.5 animate-pulse rounded-full bg-[#6d9387]" />
-      ) : null}
-      {status}
-    </span>
+    <div className="mt-7 space-y-6" aria-busy="true" aria-live="polite">
+      <span className="sr-only">Loading case…</span>
+      <div className="space-y-3" aria-hidden="true">
+        <div className="h-3 w-32 animate-pulse rounded bg-surface-muted" />
+        <div className="h-7 w-72 animate-pulse rounded bg-surface-muted" />
+      </div>
+      <div className="h-56 animate-pulse rounded-lg border border-line bg-surface" aria-hidden="true" />
+      <div className="h-80 animate-pulse rounded-lg border border-line bg-surface" aria-hidden="true" />
+    </div>
   );
 }

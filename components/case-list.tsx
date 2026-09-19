@@ -1,16 +1,100 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowUpRight, Plus } from "lucide-react";
 import { useQuery } from "convex/react";
+import { BriefcaseBusiness, Plus } from "lucide-react";
+
 import { api } from "@/convex/_generated/api";
 import { AppShell } from "./app-shell";
-import { useDemoUser } from "./demo-user";
-
-const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+import { CaseTable } from "./case-table";
+import { useCurrentUser } from "./current-user";
+import { Panel, PanelHead } from "./ui/primitives";
 
 export function CaseList() {
-  const { userId, error } = useDemoUser();
+  // The unreachable-backend message is not repeated here: `WorkspaceGate` renders
+  // it before this component is reached, so a second copy could never be seen.
+  const { userId } = useCurrentUser();
   const cases = useQuery(api.cases.list, userId ? { userId } : "skip");
-  return <AppShell><div className="mx-auto max-w-7xl px-5 py-8 sm:px-8 lg:px-10 lg:py-10"><div className="flex items-end justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#82908a]">Workspace</p><h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">Cases</h1><p className="mt-2 text-sm text-[#69737d]">Every deposit recovery case in one place.</p></div><Link href="/cases/new" className="inline-flex h-10 items-center gap-2 rounded-lg bg-[#173f35] px-4 text-sm font-semibold text-white"><Plus size={17} /> <span className="hidden sm:inline">Create case</span></Link></div>{error ? <p className="mt-6 rounded-lg border border-[#e6c9c5] bg-[#fff7f6] px-4 py-3 text-sm text-[#9c4338]">{error}</p> : null}<div className="mt-8 overflow-hidden rounded-xl border border-[#e4e7eb] bg-white">{cases === undefined ? <div className="p-6 text-sm text-[#89929b]">Loading cases...</div> : cases.length === 0 ? <div className="p-12 text-center text-sm text-[#89929b]">No cases yet. Create one to begin.</div> : <div className="divide-y divide-[#edf0f2]">{cases.map((item) => <Link key={item._id} href={`/cases/${item._id}`} className="grid gap-4 px-5 py-4 hover:bg-[#fafbfb] sm:grid-cols-[1.5fr_1fr_1fr_1fr_1fr_auto] sm:items-center sm:px-6"><div><p className="text-sm font-semibold">Case {item._id.slice(-6).toUpperCase()}</p><p className="mt-1 text-xs text-[#89929b]">{new Date(item.createdAt).toLocaleDateString()}</p></div><p className="text-sm text-[#4a5660]">{item.jurisdiction}</p><p className="text-sm text-[#4a5660]">{currency.format(item.depositAmount)}</p><p className="text-sm text-[#4a5660]">{currency.format(item.totalDeductions)}</p><div><span className="rounded-full bg-[#edf4f1] px-2.5 py-1 text-[11px] font-semibold text-[#235b4c]">{item.status}</span><p className="mt-2 text-xs text-[#89929b]">Disputable: {currency.format(item.potentiallyDisputableAmount)}</p></div><ArrowUpRight size={16} className="text-[#a1abb3]" /></Link>)}</div>}</div></div></AppShell>;
+
+  return (
+    <AppShell>
+      <div className="mx-auto max-w-6xl px-5 py-8 sm:px-8 lg:px-10 lg:py-10">
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-ink-muted">
+              Workspace
+            </p>
+            <h1 className="mt-2 text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-ink">
+              Cases
+            </h1>
+            <p className="mt-2 text-[13px] leading-6 text-ink-secondary">
+              Every deposit dispute, and the amount the evidence indicates may be disputable.
+            </p>
+          </div>
+          <Link
+            href="/cases/new"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-white transition-colors hover:bg-accent-strong"
+          >
+            <Plus size={15} aria-hidden="true" />
+            Create case
+          </Link>
+        </header>
+
+        <Panel as="div" className="mt-7 overflow-hidden">
+          <PanelHead
+            title="All cases"
+            description="Newest first."
+            aside={
+              cases ? (
+                <span className="tabular text-[11px] font-medium text-ink-muted">{cases.length}</span>
+              ) : null
+            }
+          />
+
+          {cases === undefined ? (
+            <LoadingRows />
+          ) : cases.length === 0 ? (
+            <EmptyCases />
+          ) : (
+            <CaseTable cases={cases} />
+          )}
+        </Panel>
+      </div>
+    </AppShell>
+  );
+}
+
+function LoadingRows() {
+  return (
+    <div className="space-y-2 p-5" aria-hidden="true">
+      <div className="h-11 animate-pulse rounded-md bg-surface-muted" />
+      <div className="h-11 animate-pulse rounded-md bg-surface-muted" />
+      <div className="h-11 animate-pulse rounded-md bg-surface-muted" />
+    </div>
+  );
+}
+
+function EmptyCases() {
+  return (
+    <div className="flex flex-col items-center px-6 py-16 text-center">
+      <span
+        className="flex size-10 items-center justify-center rounded-full border border-line bg-surface-muted text-ink-muted"
+        aria-hidden="true"
+      >
+        <BriefcaseBusiness size={17} />
+      </span>
+      <h3 className="mt-4 text-[13px] font-semibold text-ink">No cases yet</h3>
+      <p className="mt-2 max-w-sm text-xs leading-5 text-ink-secondary">
+        Start a case with the figures from your deposit statement. Clawback opens a private email
+        address so the statement can be read automatically.
+      </p>
+      <Link
+        href="/cases/new"
+        className="mt-5 inline-flex h-9 items-center gap-1.5 rounded-md border border-line bg-surface px-3.5 text-[13px] font-semibold text-ink transition-colors hover:border-line-strong"
+      >
+        <Plus size={14} aria-hidden="true" />
+        Create case
+      </Link>
+    </div>
+  );
 }
