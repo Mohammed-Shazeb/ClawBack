@@ -4,127 +4,329 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Clawback design tokens.
+ *
+ * The product is a financial-recovery workspace, so the palette is warm-neutral
+ * and paper-like rather than "AI": an off-white page, white surfaces, near-black
+ * type, hairline borders and one restrained accent. Colour carries meaning only
+ * where money or state depends on it.
+ *
+ * Semantic names (surface / line / ink / accent) are what components should use.
+ * The raw hex values live here and nowhere else.
+ */
+:root {
+  /* Surfaces, from the page up to raised chrome. */
+  --cb-page: #f7f6f3;
+  --cb-surface: #ffffff;
+  --cb-surface-muted: #f4f3f0;
+  --cb-surface-sunken: #eeece7;
+
+  /* Hairlines. */
+  --cb-line: #e6e3dd;
+  --cb-line-strong: #d5d1c8;
+
+  /*
+   * Ink, in three readable weights.
+   *
+   * The lightest weight carries real content — the uppercase micro-labels, the
+   * timestamps and the disclaimers — so it has to clear WCAG AA rather than just
+   * look quiet. Measured contrast ratios:
+   *
+   *   ink            17.8 / 16.1 / 15.1  (on surface / surface-muted / sunken)
+   *   ink-secondary   6.1 /  5.5 /  5.2
+   *   ink-muted       5.3 /  4.8 /  4.5
+   *
+   * The previous #8b939c sat at 2.6–3.1, which passed only as "large text" while
+   * being used almost entirely at 10–11px.
+   */
+  --cb-ink: #14181c;
+  --cb-ink-secondary: #5a636d;
+  --cb-ink-muted: #636c77;
+
+  /* The single accent: a deep, serious green. Used for action and affirmation. */
+  --cb-accent: #1f5a4a;
+  --cb-accent-strong: #17453a;
+  --cb-accent-soft: #eaf3ef;
+  --cb-accent-line: #c3d9d0;
+
+  /* Attention: money that may be recoverable. Warm, not alarming. */
+  --cb-attention: #8a5230;
+  --cb-attention-soft: #fbf1e9;
+  --cb-attention-line: #ecd9c8;
+
+  /* Failure. Muted brick rather than a pure red. */
+  --cb-danger: #9c4338;
+  --cb-danger-soft: #fdf5f4;
+  --cb-danger-line: #e8cdc8;
+
+  /* Elevation: barely there. Depth comes from borders, not shadows. */
+  --cb-shadow-xs: 0 1px 1px rgb(20 24 28 / 0.03);
+  --cb-shadow-sm: 0 1px 2px rgb(20 24 28 / 0.04), 0 1px 1px rgb(20 24 28 / 0.02);
+  --cb-shadow-md: 0 2px 4px rgb(20 24 28 / 0.04), 0 4px 12px rgb(20 24 28 / 0.04);
+
+  --cb-radius: 0.625rem;
+
+  /* shadcn bridge, so shadcn primitives inherit the same palette. */
+  --background: var(--cb-page);
+  --foreground: var(--cb-ink);
+  --card: var(--cb-surface);
+  --card-foreground: var(--cb-ink);
+  --popover: var(--cb-surface);
+  --popover-foreground: var(--cb-ink);
+  --primary: var(--cb-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--cb-surface-muted);
+  --secondary-foreground: var(--cb-ink);
+  --muted: var(--cb-surface-muted);
+  --muted-foreground: var(--cb-ink-muted);
+  --accent: var(--cb-surface-muted);
+  --accent-foreground: var(--cb-ink);
+  --destructive: var(--cb-danger);
+  --border: var(--cb-line);
+  --input: var(--cb-line);
+  --ring: var(--cb-accent);
+  --radius: var(--cb-radius);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
+  --font-heading: var(--font-geist-sans);
+
+  /* Semantic colour utilities: bg-page, bg-surface, text-ink, border-line, … */
+  --color-page: var(--cb-page);
+  --color-surface: var(--cb-surface);
+  --color-surface-muted: var(--cb-surface-muted);
+  --color-surface-sunken: var(--cb-surface-sunken);
+  --color-line: var(--cb-line);
+  --color-line-strong: var(--cb-line-strong);
+  --color-ink: var(--cb-ink);
+  --color-ink-secondary: var(--cb-ink-secondary);
+  --color-ink-muted: var(--cb-ink-muted);
+  --color-accent: var(--cb-accent);
+  --color-accent-strong: var(--cb-accent-strong);
+  --color-accent-soft: var(--cb-accent-soft);
+  --color-accent-line: var(--cb-accent-line);
+  --color-attention: var(--cb-attention);
+  --color-attention-soft: var(--cb-attention-soft);
+  --color-attention-line: var(--cb-attention-line);
+  --color-danger: var(--cb-danger);
+  --color-danger-soft: var(--cb-danger-soft);
+  --color-danger-line: var(--cb-danger-line);
+
+  --radius-sm: calc(var(--cb-radius) * 0.6);
+  --radius-md: calc(var(--cb-radius) * 0.8);
+  --radius-lg: var(--cb-radius);
+  --radius-xl: calc(var(--cb-radius) * 1.4);
+
+  /*
+   * The shadcn primitives (components/ui/button.tsx) are written against these
+   * names, and Tailwind only generates a utility for a colour that exists in the
+   * theme. Without them `bg-muted` / `border-input` / `ring-ring` resolve to
+   * nothing — silently unstyled rather than a visible error — and `@apply
+   * outline-ring/50` in the base layer fails the build outright.
+   */
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
-}
-
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  /* `accent` is the brand green above, so its foreground must be the light one. */
+  --color-accent-foreground: var(--primary-foreground);
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-line outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-page text-ink;
+    /* Optical polish: the near-black ink reads better slightly tighter. */
+    font-feature-settings: "cv11", "ss01";
   }
   html {
     @apply font-sans;
+    scroll-behavior: smooth;
+  }
+
+  /* Visible, consistent focus for keyboard users on every interactive element. */
+  :where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--cb-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Financial figures line up in columns. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+ * Motion.
+ *
+ * Animation is used only to communicate a state change, so it is short and
+ * never decorative. Everything here collapses under reduced-motion.
+ */
+@layer utilities {
+  @keyframes cb-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes cb-sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
+
+  /*
+   * The only two animations in the product. A panel appearing is a state change
+   * worth signalling; everything else is a transition on an existing element.
+   * There is deliberately no entrance animation for page content — nothing here
+   * should move for the sake of moving.
+   */
+  .animate-fade {
+    animation: cb-fade 0.24s ease-out both;
+  }
+  /* A single restrained progress sweep for genuinely in-flight work. */
+  .animate-sweep::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgb(31 90 74 / 0.09), transparent);
+    animation: cb-sweep 1.6s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/*
+ * ============================================================================
+ * Main UI tokens (ported from UI/clawback-case-clarity/src/styles.css).
+ *
+ * Added, not substituted: the existing `--cb-*` palette above stays the source
+ * of truth and the current screens keep using it. Everything below only supplies
+ * the names this UI's markup references that the theme did not already define
+ * (border-strong, paper, the three signal colours, three elevation shadows) plus
+ * its custom utilities. Each new colour is mapped onto an existing `--cb-*`
+ * value rather than introducing a parallel palette, so the two UIs cannot drift.
+ * ============================================================================
+ */
+:root {
+  --border-strong: var(--cb-line-strong);
+  --paper: #fdfcfa;
+
+  /*
+   * Assessment signals. These carry the finding on a deduction, so they reuse
+   * the meanings the palette already assigns: green = money in question,
+   * warm = not enough information, neutral = nothing to dispute.
+   */
+  --signal-open: var(--cb-accent);
+  --signal-open-soft: var(--cb-accent-soft);
+  --signal-valid: var(--cb-ink-secondary);
+  --signal-valid-soft: var(--cb-surface-muted);
+  --signal-unknown: var(--cb-attention);
+  --signal-unknown-soft: var(--cb-attention-soft);
+}
+
+@theme inline {
+  --color-border-strong: var(--border-strong);
+  --color-paper: var(--paper);
+
+  --color-signal-open: var(--signal-open);
+  --color-signal-open-soft: var(--signal-open-soft);
+  --color-signal-valid: var(--signal-valid);
+  --color-signal-valid-soft: var(--signal-valid-soft);
+  --color-signal-unknown: var(--signal-unknown);
+  --color-signal-unknown-soft: var(--signal-unknown-soft);
+
+  --shadow-flat: 0 1px 1px rgb(20 24 28 / 0.04);
+  --shadow-raised:
+    0 1px 2px rgb(20 24 28 / 0.05), 0 8px 24px -16px rgb(20 24 28 / 0.18);
+  --shadow-paper:
+    0 1px 2px rgb(20 24 28 / 0.05), 0 24px 60px -40px rgb(20 24 28 / 0.3);
+}
+
+/* The uppercase micro-label used for every section heading. */
+@utility label-eyebrow {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+}
+
+/* Figures: monospaced and tabular so columns of money line up. */
+@utility numeral {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+@utility hairline-grid {
+  background-image:
+    linear-gradient(to right, var(--color-border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-border) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse at top, black, transparent 75%);
+}
+
+@utility rise-in {
+  animation: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility pulse-dot {
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
   }
 }

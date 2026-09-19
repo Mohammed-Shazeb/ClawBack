@@ -1,5 +1,5 @@
-import { Dashboard } from "@/components/dashboard";
+import { LandingHero } from "@/components/clarity/landing";
 
 export default function Home() {
-  return <Dashboard />;
+  return <LandingHero />;
 }

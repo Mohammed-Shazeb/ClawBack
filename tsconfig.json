@@ -30,5 +30,10 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  /*
+   * `UI/` is the reference design project (its own Vite/TanStack app with its
+   * own dependencies). It is kept for reference only and is not part of this
+   * build, so type-checking it here just reports its uninstalled packages.
+   */
+  "exclude": ["node_modules", "UI"]
 }
