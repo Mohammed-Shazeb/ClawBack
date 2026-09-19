@@ -18,6 +18,23 @@ const attachmentResponseSchema = z.object({
   content_type: z.string().nullish(),
 });
 
+/**
+ * Why a response failed to parse.
+ *
+ * A bare "unexpected response" is undiagnosable: it does not say which field
+ * was missing or the wrong type, so a provider whose shape differs from ours
+ * looks identical to a transient network problem. This is the same lesson as
+ * the letter validator — the reason has to name what did not match.
+ */
+function describeParseFailure(error: z.ZodError): string {
+  const detail = error.issues
+    .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("; ")
+    .slice(0, 300);
+
+  return `unexpected response (${detail})`;
+}
+
 const inboxSchema = z.object({
   inbox_id: z.string().min(1),
   display_name: z.string().nullish(),
@@ -68,6 +85,23 @@ const messageSchema = z.object({
       })
     )
     .nullish(),
+});
+
+/**
+ * What `POST /inboxes/{id}/messages/send` actually returns.
+ *
+ * It is NOT the same shape as a message object. A message carries `inbox_id`,
+ * `from`, `to`, `subject`, `labels` and so on; the send endpoint answers with
+ * only `message_id` and `thread_id`. Parsing the send result with
+ * `messageSchema` therefore failed on the missing `inbox_id` — and it failed
+ * *after* the provider had already delivered, so every send was recorded as a
+ * failure while the landlord received the letter.
+ *
+ * Extra fields are tolerated so a provider that returns more still parses.
+ */
+export const sentMessageSchema = z.object({
+  message_id: z.string().min(1),
+  thread_id: z.string().nullish(),
 });
 
 /** What a send returns: the stored message, with its thread. */
@@ -135,7 +169,9 @@ export async function createCaseInbox({
 
   const parsed = inboxSchema.safeParse(response);
   if (!parsed.success) {
-    throw new Error("AgentMail accepted the inbox request but returned an unexpected response.");
+    throw new Error(
+      `AgentMail accepted the inbox request but returned an ${describeParseFailure(parsed.error)}.`
+    );
   }
 
   return { inboxId: parsed.data.inbox_id };
@@ -185,16 +221,20 @@ export async function sendCaseMessage({
     }
   );
 
-  const parsed = messageSchema.safeParse(response);
+  const parsed = sentMessageSchema.safeParse(response);
   if (!parsed.success) {
-    throw new Error("AgentMail accepted the message but returned an unexpected response.");
+    throw new Error(
+      `AgentMail accepted the message but returned an ${describeParseFailure(parsed.error)}.`
+    );
   }
 
   return {
     externalMessageId: parsed.data.message_id,
     threadId: parsed.data.thread_id ?? undefined,
-    recipient: firstAddress(parsed.data.to),
-    subject: parsed.data.subject?.trim() ?? subject,
+    // The send result carries no addressing, so the values we asked for are the
+    // ones that were used.
+    recipient: firstAddress(to),
+    subject,
   };
 }
 

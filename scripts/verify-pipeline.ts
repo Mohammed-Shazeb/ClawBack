@@ -15,6 +15,7 @@ import {
   agentMailWebhookEventSchema,
   caseInboxLocalPart,
   normalizeInboundMessage,
+  sentMessageSchema,
 } from "../convex/agentmail";
 import {
   ASSESSMENT_SYSTEM_PROMPT,
@@ -311,6 +312,46 @@ section("Webhook payload normalization");
     agentMailWebhookEventSchema.safeParse({ event_type: "domain.verified" }).data?.message ===
       undefined
   );
+
+  // A send is not a message object. `POST .../messages/send` answers with only
+  // `message_id` and `thread_id`; parsing it with the message schema demanded an
+  // `inbox_id` it does not carry, so every real send delivered and then failed
+  // to record — the landlord received the letter while the app claimed failure.
+  section("Send result parsing");
+  {
+    const real = sentMessageSchema.safeParse({
+      message_id: "<010001a0b9b60d66-000000@email.amazonses.com>",
+      thread_id: "ddc9f833-7bf4-4e2a-98f1-99dcca1b657e",
+    });
+    check("a real send result validates", real.success);
+    check(
+      "the provider message id is read",
+      real.success && real.data.message_id === "<010001a0b9b60d66-000000@email.amazonses.com>"
+    );
+    check(
+      "the thread id is read",
+      real.success && real.data.thread_id === "ddc9f833-7bf4-4e2a-98f1-99dcca1b657e"
+    );
+
+    check(
+      "no inbox_id is required, because the send response has none",
+      sentMessageSchema.safeParse({ message_id: "m1" }).success
+    );
+    check(
+      "a result with no message id is rejected",
+      !sentMessageSchema.safeParse({ thread_id: "t1" }).success
+    );
+    check("an empty message id is rejected", !sentMessageSchema.safeParse({ message_id: "" }).success);
+    check(
+      "a richer response is tolerated, so extra fields never break a send",
+      sentMessageSchema.safeParse({
+        message_id: "m2",
+        thread_id: "t2",
+        inbox_id: "case-x@agentmail.to",
+        labels: ["sent"],
+      }).success
+    );
+  }
 
   // The inbox local part is derived from the case id, so it must be exact,
   // stable, and distinct between cases: two cases must never share an address.

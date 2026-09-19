@@ -556,16 +556,12 @@ const agentmail = createServer((req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
+        // The real API answers a send with ONLY these two fields. Returning a
+        // full message object here is what let a schema mismatch reach
+        // production: every mocked suite passed while every real send failed.
         JSON.stringify({
-          inbox_id: inboxId,
-          thread_id: threadId,
           message_id: messageId,
-          to: payload.to,
-          from: inboxId,
-          subject: payload.subject,
-          text: payload.text,
-          labels: ["sent"],
-          timestamp: new Date().toISOString(),
+          thread_id: threadId,
         })
       );
       return;
