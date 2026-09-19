@@ -18,7 +18,9 @@ human approval → renter-triggered send → landlord reply → structured reply
 Battery: `verify` 390/390 · `verify:ui` 245/245 · `verify:e2e` 270/270 (+2 SKIP) ·
 `verify:auth` 12/12 · `verify:live` 21/21 · tsc clean · eslint 0 errors. `npm run build`
 writes complete output then exits non-zero on the sandbox delete guard (rule 20).
-**~90 files uncommitted, last commit `ffb1fe4`.**
+**Committed 2026-09-19** in five slices, tree clean: `19c1dc3` pipeline hardening +
+letter validator · `f611392` Convex Auth + password · `12afde2` case workspace UI ·
+`b088d83` clarity UI integration · `1dc0273` reports. (Was 86 files on top of `ffb1fe4`.)
 
 **Main UI: `components/clarity/`** — ported from `UI/clawback-case-clarity/` (TanStack
 Start; excluded in `tsconfig.json`). Routes `/`, `/case`, `/evidence`, `/intelligence`,
@@ -141,3 +143,17 @@ without it).
     every Texas letter failed validation for doing what it was told. Ban the escalation
     form (`report|contact|complain|escalate … attorney general`), allow attribution, and
     add a case to `verify-pipeline.ts`'s `allowed` block whenever narrowing a filter.
+27. **Convex Auth keys accounts by `(provider, providerAccountId)`, so one email can own
+    two user rows.** A renter who uses the magic link and also signs up with a password
+    gets two accounts; observed on the cloud deployment — the **password** account
+    (`k178gpf2…`) owns the case, the **magic-link** account (`k178q3ce…`) is empty, so
+    signing in by link shows an empty workspace and the real case is invisible. Suspect
+    this first for "my case disappeared". Resolving means picking one identity; it is not
+    fixed. `authAccounts.provider` + `providerAccountId` → `userId` is the way to map it.
+28. **There is no delete path in the app** — `convex data` is read-only and no mutation
+    deletes rows. To clear throwaway data, add a temporary internal mutation taking
+    **explicit ids** (never a pattern), cascade by hand, run it with `npx convex run`, then
+    delete the file and push again. A case parents six tables — `deductions`, `sources`,
+    `evidence`, `letters`, `emails`, `timelineEvents`; deleting the case row alone orphans
+    them. A user parents `authAccounts`, `authSessions`, and — via `sessionId`, not
+    `userId` — `authRefreshTokens`.
