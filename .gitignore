@@ -43,3 +43,6 @@ next-env.d.ts
 
 # offline verification build output
 /.verify/
+
+# local workbuddy state
+/.workbuddy-ai/
