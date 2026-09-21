@@ -3,7 +3,7 @@
 Plain actions only, no narration. Follow it top to bottom and the whole product
 demonstrates itself.
 
-Sample statement to use: [`SAMPLE-LANDLORD-STATEMENT.txt`](./SAMPLE-LANDLORD-STATEMENT.txt)
+Sample statement to use: [`SAMPLE-DEPOSIT-STATEMENT.txt`](./SAMPLE-DEPOSIT-STATEMENT.txt)
 
 ---
 
