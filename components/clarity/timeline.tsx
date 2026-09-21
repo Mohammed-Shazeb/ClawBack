@@ -42,7 +42,7 @@ export function Timeline() {
           const last = i === timeline.length - 1;
           return (
             <li
-              key={`${event.time}-${event.title}`}
+              key={event.id}
               className={cn(
                 "relative grid grid-cols-[56px_20px_minmax(0,1fr)] gap-x-4 pb-8 transition-all duration-500 ease-out",
                 visible ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",

@@ -167,12 +167,14 @@ export function CaseDataProvider({ children }: { children: ReactNode }) {
     const events = rawTimeline ?? [];
 
     const activitySteps: ActivityStep[] = events.map((event) => ({
+      id: event._id,
       label: humanize(event.type),
       detail: event.description,
       state: "done",
     }));
 
     const timeline: TimelineEvent[] = events.map((event) => ({
+      id: event._id,
       time: clockTime(event.createdAt),
       title: humanize(event.type),
       detail: event.description,

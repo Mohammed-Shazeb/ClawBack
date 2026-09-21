@@ -53,7 +53,7 @@ export function Intelligence() {
               const shown = i < revealed;
               return (
                 <li
-                  key={step.label}
+                  key={step.id}
                   className={cn(
                     "relative grid grid-cols-[24px_minmax(0,1fr)] gap-4 pb-7 transition-all duration-500",
                     shown ? "translate-y-0 opacity-100" : "translate-y-1.5 opacity-0",

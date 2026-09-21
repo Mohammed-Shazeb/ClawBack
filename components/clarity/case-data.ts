@@ -59,12 +59,14 @@ export type CaseMeta = {
 };
 
 export type ActivityStep = {
+  id: string;
   label: string;
   detail: string;
   state: "done" | "active" | "pending";
 };
 
 export type TimelineEvent = {
+  id: string;
   time: string;
   title: string;
   detail: string;
