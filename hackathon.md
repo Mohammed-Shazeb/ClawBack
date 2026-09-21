@@ -593,4 +593,114 @@ works. The correct status for both AgentMail outbound and OpenAI response readin
   written, with no thread-level reconciliation
 - The reading is a transcription, not advice, and the UI says so — but it is still
   model output and should be read alongside the landlord's own words
-- Demo workspace identity (single user; production auth needed)
+- Demo workspace identity (single user; production auth needed) — **RESOLVED 2026-09-19**,
+  see below. The app now derives identity from a Convex Auth session; no client-supplied id
+  is trusted anywhere.
+
+---
+
+## 2026-09-17 — Live provider verification (clearing the "PENDING" items above)
+
+`npm run verify:live` was added: 21 checks that hit the **real** providers rather than mocks,
+because a green mock suite is not evidence that an integration works.
+
+- **OpenAI: 16/16 live.** Extraction, assessment and response reading exercised against the
+  real gateway with real structured output.
+- **Firecrawl live.** Search and authority classification verified against real results.
+- **AgentMail live.** Credential and inbox creation verified against the real API.
+
+Two real defects surfaced that no mocked suite could have caught:
+
+1. **`response_format` is a request, not a guarantee.** The gateway answers `200 OK` to
+   `json_schema` / `strict: true` and then ignores the schema. The JSON Schema is now
+   carried inside the prompt on every call as well.
+2. **A prose research question has poor official-source recall.** Measured on one California
+   deduction: the long natural-language question returned 4 results with **no government
+   host at all**; a short keyword query over the same facts returned 10, including
+   `selfhelp.courts.ca.gov`. `research.ts` now runs both queries in parallel through the
+   same `classifyAuthority` and dedupes by URL — official-source recall went 1 → 5. This was
+   deliberately **not** fixed by widening the official-host allowlist.
+
+The "LIVE VERIFICATION PENDING" items from 09-14 are therefore closed, with one exception:
+a real inbound landlord reply still needs a public HTTPS URL for the webhook, so inbound has
+been verified only against signed mock deliveries.
+
+## 2026-09-18 — Day 8/9: rebuilding the case workspace UI
+
+Rebuilt from a reference design in six separately verified increments: deposit
+decomposition, section navigation, the first-run hero, a per-row amount-in-question, a
+two-way letter↔evidence link, and a readable record of what was actually sent.
+
+Honesty constraints, each pinned by a check in `verify:ui` (245):
+
+- the deposit bar's third segment is **"not withheld"**, never "returned" — the app knows
+  the deposit was not deducted but cannot know it was handed back
+- a deduction with no stored source renders no fabricated passage
+- an approved letter never auto-sends
+- no figure is ever described as recovered
+
+Also: `verify:e2e` now streams its output instead of buffering to the end (a hang used to be
+indistinguishable from a failure), and `npm run stack` brings up the whole local stack —
+Convex, the three provider mocks, and Next — with one command.
+
+## 2026-09-19 — Auth, the new main UI, and two production defects
+
+### Authentication (replaces the demo identity)
+
+Client-supplied `userId` is gone. Identity is derived from the session in `convex/caller.ts`;
+24 public functions go through it and a source scan fails the build if any new one does not.
+Two sign-in methods: an AgentMail magic link, and a **Password** provider collecting
+**name + email + password** at `/signup`. "Get started" sends an unauthenticated visitor to
+sign-up first; every case route is gated.
+
+Known issue, not fixed: Convex Auth keys accounts by `(provider, providerAccountId)`, so one
+email can end up with two user rows if a renter uses both methods.
+
+### The reference UI became the main UI
+
+`components/clarity/` — landing, case, evidence, intelligence, letter, timeline — ported from
+a TanStack Start prototype into the App Router, wired to real Convex data through
+`case-data-provider.tsx`, which must never fabricate: fields the backend does not store
+render "Not recorded". The prototype's 46 shadcn primitives turned out to be unused, so none
+were ported. A "Log in" route was added after noticing nothing linked to `/signin`.
+
+### Two defects found only by running the real pipeline
+
+1. **Every Texas letter failed to draft.** The validator banned the phrase
+   `attorney general` outright, but the Texas housing source *is* the Office of the Attorney
+   General and the prompt requires every claim be attributed to its source. The validator now
+   bans only the escalation form (reporting the landlord *to* the AG) and allows attribution;
+   it also reports *which* rule fired and *what text* matched, because a bare rejection is
+   undiagnosable. The dispute letter then drafted correctly: $450 disputed across carpet
+   replacement and cleaning, documentation requested for the wall repainting, and the
+   likely-valid cabinet handle correctly excluded.
+2. **Every real send delivered and then failed to record.** `POST .../messages/send` returns
+   only `{message_id, thread_id}`, but the result was parsed with the *message* schema, which
+   requires `inbox_id`. The letter stayed `APPROVED` while the provider had already accepted
+   it. Fixed with a dedicated `sentMessageSchema`, and the mock — which had been returning a
+   full message object and hiding this — now returns the minimal real shape.
+
+### Operational
+
+AgentMail's plan allows 3 inboxes and every case provisions its own, so case #4 fails
+provisioning with `403 Inbox limit exceeded`. The case row still exists and is usable; the
+failure is now surfaced as an actionable sentence rather than raw provider JSON.
+
+### Verification at the end of this day
+
+`verify` 397/397 · `verify:ui` 245/245 · `verify:e2e` 270/270 (+2 SKIP) · `verify:auth` 12/12
+· `verify:live` 21/21 · tsc clean · eslint 0 errors.
+
+## 2026-09-21 — Where the app stands
+
+One real case has been run end to end on the cloud deployment: a Texas security deposit of
+$1,500 with $1,000 itemized across 4 deductions. Clawback provisioned a private AgentMail
+inbox for it, read the forwarded statement, extracted the deductions, retrieved 7 official
+Texas sources including the Attorney General's renter's-rights guidance, assessed all 4
+deductions against those sources ($450 potentially disputable), drafted a dispute letter
+attributing each claim to its source, and — after human approval — sent it.
+
+**Honest limits of that run:** the letter was handed to Amazon SES twice (a retry after the
+first attempt reported a spurious failure), and delivery past the provider cannot be
+confirmed: the webhook ignores every event that is not `message.received`, so bounces are
+never seen. "Sent" means handed to the provider, nothing more.
