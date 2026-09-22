@@ -45,6 +45,18 @@ export type CaseData = {
   caseStatus: string | null;
   /** Needed to act on the case (approving a letter is addressed by case). */
   caseId: Id<"cases"> | null;
+  /**
+   * The case's inbound address, and how setting it up went.
+   *
+   * A statement forwarded here is attached to this case and nothing else, so
+   * the UI has to be able to name it — otherwise the empty state tells the
+   * renter to forward to "a private address" that the app never reveals.
+   * `inboxStatus` is `READY`, `FAILED`, or the in-flight state; `inboxError`
+   * carries the provider's reason when it failed.
+   */
+  inboxId: string | null;
+  inboxStatus: string | null;
+  inboxError: string | null;
   deductions: Deduction[];
   sources: Source[];
   activitySteps: ActivityStep[];
@@ -63,6 +75,9 @@ const EMPTY: CaseData = {
   caseMeta: null,
   caseStatus: null,
   caseId: null,
+  inboxId: null,
+  inboxStatus: null,
+  inboxError: null,
   deductions: [],
   sources: [],
   activitySteps: [],
@@ -208,6 +223,11 @@ export function CaseDataProvider({ children }: { children: ReactNode }) {
       caseMeta,
       caseStatus: activeCase.status,
       caseId: activeCase._id,
+      // Read straight from the row. A case whose inbox failed has no address, so
+      // this stays null rather than falling back to the address it *would* have.
+      inboxId: activeCase.inboxId ?? null,
+      inboxStatus: activeCase.inboxStatus ?? null,
+      inboxError: activeCase.inboxError ?? null,
       deductions,
       sources,
       activitySteps,

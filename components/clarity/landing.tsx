@@ -7,11 +7,31 @@ import { useCurrentUser } from "@/components/current-user";
 import { FlowField } from "./flow-field";
 
 /**
- * The landing hero, ported unchanged apart from where "Get started" points.
+ * The landing hero.
  *
- * A visitor who is not signed in is sent to sign-up rather than into a case
- * screen they cannot load: everything past this point belongs to an account.
+ * The bar at the top is the product name and nothing else: centred, large, no
+ * mark beside it. It previously carried the logo on the left and a session link
+ * on the right, which split attention away from the name on the one page whose
+ * entire job is to say what this is.
+ *
+ * The name animates in one letter at a time — see `wordmark-letter` in
+ * `globals.css`. That is the only motion added to this page; the hero itself
+ * already has the flow field behind it and does not need a second thing moving.
+ *
+ * "Get started" goes to the case list rather than straight into a case — a
+ * renter who has already made one should see the ones they have, instead of
+ * being dropped into whichever happened to be newest.
  */
+
+/**
+ * The wordmark, and the gap between each letter's entrance.
+ *
+ * Exported so the render harness can assert the stagger without hard-coding a
+ * copy of the word — the two drifting apart is exactly how a test stops testing.
+ */
+export const WORDMARK = "Clawback";
+export const LETTER_STAGGER_MS = 55;
+
 export function LandingHero() {
   const { isSignedIn } = useCurrentUser();
 
@@ -20,11 +40,39 @@ export function LandingHero() {
       <FlowField className="absolute inset-0 h-full w-full" />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_35%,rgba(0,0,0,0.75)_100%)]" />
 
-      <div className="relative z-10 flex max-w-3xl flex-col items-center px-6 text-center">
+      <header className="absolute inset-x-0 top-5 z-20">
+        <div className="flex items-center justify-center px-6 pt-11">
+          {/*
+            One element per letter so the name assembles rather than appearing.
+
+            The letters are `aria-hidden` and the wrapper carries the label,
+            because eight bare sibling letters are read out one at a time by
+            some screen readers — which is worse than not animating at all.
+          */}
+          <span
+            role="img"
+            aria-label={WORDMARK}
+            className="mt-10 text-[80px] font-semibold leading-none tracking-[-0.04em] text-white"
+          >
+            {WORDMARK.split("").map((letter, index) => (
+              <span
+                key={`${letter}${index}`}
+                aria-hidden="true"
+                className="wordmark-letter"
+                style={{ animationDelay: `${index * LETTER_STAGGER_MS}ms` }}
+              >
+                {letter}
+              </span>
+            ))}
+          </span>
+        </div>
+      </header>
+
+      <div className="relative z-10 flex max-w-3xl translate-y-12 flex-col items-center px-6 text-center">
         <p className="text-[12px] font-medium uppercase tracking-[0.28em] text-white/60">
           Security-deposit dispute analysis
         </p>
-        <h1 className="mt-6 text-[52px] font-semibold leading-[1.02] tracking-[-0.04em] text-white sm:text-[76px]">
+        <h1 className="mt-6 text-[50px] font-semibold leading-[1.02] tracking-[-0.04em] text-white sm:text-[76px]">
           Your deposit.
           <br />
           Your money.
@@ -37,7 +85,7 @@ export function LandingHero() {
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
           <Link
-            href={isSignedIn ? "/case" : "/signup"}
+            href={isSignedIn ? "/cases" : "/signup"}
             className="group inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-[13.5px] font-medium text-black transition-transform duration-200 hover:scale-[1.03]"
           >
             Get started
@@ -51,18 +99,6 @@ export function LandingHero() {
             See a dispute letter
           </Link>
         </div>
-
-        {isSignedIn ? null : (
-          <p className="mt-6 text-[13.5px] text-white/50">
-            Already have an account?{" "}
-            <Link
-              href="/signin"
-              className="font-medium text-white/85 underline-offset-4 transition-colors hover:text-white hover:underline"
-            >
-              Log in
-            </Link>
-          </p>
-        )}
       </div>
     </section>
   );

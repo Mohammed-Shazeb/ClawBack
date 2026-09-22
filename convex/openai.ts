@@ -13,6 +13,23 @@ const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_PROVIDER_MESSAGE_LENGTH = 200;
 
+/**
+ * A ceiling on the model's output, sent on every request.
+ *
+ * This is not an optimisation — some gateways refuse the request without it.
+ * OpenRouter pre-authorises the model's *entire* output window when `max_tokens`
+ * is absent (128k for `openai/gpt-5.6-luna`, which it reports as 65536), and
+ * rejects a request the account cannot cover *up front* with a `402` — so a
+ * perfectly healthy key looks dead before the model is ever called. A cap makes
+ * the request affordable and the failure mode honest.
+ *
+ * It must stay well clear of the longest output we ask for (the dispute letter),
+ * because hitting the cap truncates the JSON mid-object and the caller's
+ * validator then rejects the whole document. Raise it via `OPENAI_MAX_TOKENS`
+ * for a model that thinks at length.
+ */
+const DEFAULT_MAX_TOKENS = 8192;
+
 const chatCompletionSchema = z.object({
   choices: z
     .array(
@@ -62,6 +79,12 @@ export async function requestStructuredJson({
 
   const baseUrl = (process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
 
+  const configured = Number(process.env.OPENAI_MAX_TOKENS);
+  const maxTokens =
+    Number.isFinite(configured) && configured > 0
+      ? Math.floor(configured)
+      : DEFAULT_MAX_TOKENS;
+
   const send = (responseFormat: Record<string, unknown>, systemSuffix = "") =>
     fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
@@ -76,6 +99,7 @@ export async function requestStructuredJson({
           { role: "user", content: user },
         ],
         response_format: responseFormat,
+        max_tokens: maxTokens,
       }),
       signal: requestSignal(),
     });

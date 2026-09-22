@@ -10,6 +10,7 @@ import { AssessmentTag } from "./assessment-tag";
 import { CountUp } from "./count-up";
 import { currency } from "./case-data";
 import { useCaseData } from "./case-data-provider";
+import { CaseInboxAddress } from "./case-inbox";
 import { NoCase } from "./states";
 
 export function CaseOverview() {
@@ -71,6 +72,10 @@ export function CaseOverview() {
             <Legend color="bg-border-strong" label={`${currency(validShare)} likely valid deductions`} />
             <Legend color="bg-secondary" label={`${currency(caseMeta.notWithheld)} not withheld`} />
           </div>
+        </div>
+
+        <div className="mt-8">
+          <CaseInboxAddress />
         </div>
       </section>
 

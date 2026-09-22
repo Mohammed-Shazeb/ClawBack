@@ -9,6 +9,8 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { AppShell } from "../../components/app-shell";
 import { CaseLetter } from "../../components/case-letter";
@@ -21,6 +23,11 @@ import { CaseOverview } from "../../components/case-overview";
 import { CaseStatement } from "../../components/case-statement";
 import { SignIn } from "../../components/sign-in";
 import { WorkspaceGate } from "../../components/workspace-gate";
+import { AppShell as ClarityAppShell } from "../../components/clarity/app-shell";
+import { CaseDataProvider } from "../../components/clarity/case-data-provider";
+import { CaseInboxAddress } from "../../components/clarity/case-inbox";
+import { CaseOverview as ClarityCaseOverview } from "../../components/clarity/case-overview";
+import { LandingHero, LETTER_STAGGER_MS, WORDMARK } from "../../components/clarity/landing";
 import type { Id } from "../../convex/_generated/dataModel";
 
 let checks = 0;
@@ -282,11 +289,53 @@ const SIGNED_IN_USER = {
   name: "Renter",
 };
 
+/**
+ * A case row for the main-UI shell.
+ *
+ * `_id` ends in `1234` on purpose: the header shows only the tail, so the check
+ * below asserts on `Case #1234` and would fail if the shell ever printed the
+ * whole id.
+ */
+const MAIN_UI_CASE = {
+  _id: "case_abcd1234",
+  jurisdiction: "Texas",
+  createdAt: Date.UTC(2026, 8, 19, 12, 0, 0),
+  depositAmount: 1500,
+  totalDeductions: 1000,
+  potentiallyDisputableAmount: 450,
+  status: "AWAITING_APPROVAL",
+};
+
 function renderOverview(fixtures: Fixtures): string {
   globalThis.__FIXTURES__ = { "users:current": SIGNED_IN_USER, ...fixtures };
   return renderToStaticMarkup(
     createElement(CaseOverview, { caseId: "case1", userId: "user1" as Id<"users"> })
   );
+}
+
+/**
+ * Renders the main UI's case-address panel against a `cases:list` row.
+ *
+ * The panel reads the address straight off the case row, so the fixture row is
+ * the entire input — which is what makes the "no address yet" states reachable
+ * here at all.
+ */
+function renderInbox(fixtures: Fixtures): { html: string; text: string } {
+  globalThis.__FIXTURES__ = {
+    "users:current": SIGNED_IN_USER,
+    "deductions:listByCase": [],
+    "sources:listByCase": [],
+    "cases:getTimeline": [],
+    "letters:getForCase": null,
+    "emails:listByCase": [],
+    ...fixtures,
+  };
+
+  const html = renderToStaticMarkup(
+    createElement(CaseDataProvider, null, createElement(CaseInboxAddress))
+  );
+
+  return { html, text: text(html) };
 }
 
 // --- Fixtures for the case screens -------------------------------------------------
@@ -437,6 +486,26 @@ const text = (html: string): string =>
     .replace(/&amp;/g, "&")
     .replace(/\s+/g, " ")
     .trim();
+
+/**
+ * Tag-stripped with **no** separator, so markup split one letter per element
+ * still reads as a single word.
+ *
+ * `text()` above inserts a space for every tag it removes, which turns an
+ * animated wordmark into "C l a w b a c k" and silently breaks any check
+ * looking for the product name. That is a real trap, not a hypothetical: it
+ * caught this harness out the moment the wordmark was split.
+ */
+const gluedText = (html: string): string => html.replace(/<[^>]+>/g, "");
+
+/** The first `<header>` element of a rendered page, as markup. */
+function headerOf(html: string): string {
+  const start = html.indexOf("<header");
+  if (start === -1) return "";
+
+  const end = html.indexOf("</header>", start);
+  return end === -1 ? html.slice(start) : html.slice(start, end + "</header>".length);
+}
 
 // --- The letter as a document -------------------------------------------------------
 section("The letter renders as a document");
@@ -1322,6 +1391,348 @@ section("The shell names the account instead of a placeholder");
   check("a signed-out shell says so rather than naming a user", /Not signed in/.test(anonShell));
   check("a signed-out shell offers no sign out", !/Sign out/.test(anonShell));
   check("a signed-out shell names no address", !/@/.test(anonShell));
+
+  globalThis.__AUTH__ = undefined;
+  globalThis.__FIXTURES__ = undefined;
+}
+
+section("The main UI shell offers a new case and a way out of the account");
+{
+  /*
+   * The clarity shell had neither. Case creation lived only in the `/cases`
+   * workspace and the empty state, so a renter who already had a case had no
+   * route to a second; and there was no sign-out anywhere in this UI.
+   *
+   * Rendered bare first: `useCaseData()` falls back to its empty default with no
+   * provider, which is the "signed in, nothing loaded yet" state. The account
+   * cluster must survive it, because it is the only route to either action.
+   */
+  globalThis.__AUTH__ = { isLoading: false, isAuthenticated: true };
+  globalThis.__FIXTURES__ = { "users:current": SIGNED_IN_USER };
+  const bareHtml = renderToStaticMarkup(createElement(ClarityAppShell, null, null));
+  const bare = text(bareHtml);
+
+  check("the main shell offers a way to sign out", /Sign out/.test(bare), bare.slice(0, 240));
+  check("the main shell offers a way to start another case", /New case/.test(bare));
+  check(
+    "the new-case control points at the creation form",
+    /href="\/cases\/new"/.test(bareHtml)
+  );
+  // A submit button here would navigate the shell itself; sign-out must not.
+  check("the sign-out control is a plain button, not a form submit", /<button[^>]*type="button"/.test(bareHtml));
+  check(
+    "the main shell still links every case screen",
+    ["/case", "/intelligence", "/evidence", "/letter", "/timeline"].every((href) =>
+      bareHtml.includes(`href="${href}"`)
+    )
+  );
+  check("the main shell invents no account placeholder", !/not signed in/i.test(bare));
+
+  // With a case loaded, the cluster must not displace the case identity.
+  globalThis.__FIXTURES__ = {
+    "users:current": SIGNED_IN_USER,
+    "cases:list": [MAIN_UI_CASE],
+    "deductions:listByCase": [],
+    "sources:listByCase": [],
+    "cases:getTimeline": [],
+    "letters:getForCase": null,
+    "emails:listByCase": [],
+  };
+  const withCase = text(
+    renderToStaticMarkup(
+      createElement(CaseDataProvider, null, createElement(ClarityAppShell, null, null))
+    )
+  );
+
+  check("the header still names the case it is showing", /Case #1234/.test(withCase), withCase.slice(0, 240));
+  check("a loaded case does not displace the new-case control", /New case/.test(withCase));
+  check("a loaded case does not displace sign out", /Sign out/.test(withCase));
+
+  // Signed out — the negative that matters. These screens sit behind
+  // `RequireAuth`, so rendering the account cluster to a visitor with no session
+  // would be the same class of regression as showing them the workspace.
+  globalThis.__AUTH__ = { isLoading: false, isAuthenticated: false };
+  globalThis.__FIXTURES__ = { "users:current": undefined };
+  const anon = text(renderToStaticMarkup(createElement(ClarityAppShell, null, null)));
+
+  check("a signed-out main shell offers no sign out", !/Sign out/.test(anon));
+  check("a signed-out main shell offers no new-case control", !/New case/.test(anon));
+  check("a signed-out main shell names no address", !/@/.test(anon));
+
+  globalThis.__AUTH__ = undefined;
+  globalThis.__FIXTURES__ = undefined;
+}
+
+section("The product name, the mark, and the way back into the app");
+{
+  /*
+   * Two defects this pins down.
+   *
+   * The landing page had no product name anywhere above the fold — it opened on
+   * a headline and nothing said what the product was called.
+   *
+   * And the old workspace's "Dashboard" nav item pointed at `/`, which stopped
+   * being a dashboard the moment the landing page took that route over. Clicking
+   * it threw a signed-in renter out of the app and onto the marketing hero.
+   */
+  const MARK = /M19\.22 6\.7/;
+
+  globalThis.__AUTH__ = { isLoading: false, isAuthenticated: true };
+  globalThis.__FIXTURES__ = { "users:current": SIGNED_IN_USER };
+  const signedInHtml = renderToStaticMarkup(createElement(LandingHero));
+  const header = headerOf(signedInHtml);
+
+  /*
+   * Scoped to the `<header>`, not the page. The body copy also says "Clawback",
+   * so a page-wide search for the name passes even when the header has lost it
+   * entirely — and the header is the thing worth guarding.
+   */
+  check(
+    "the landing header is the product name and nothing else",
+    gluedText(header).trim() === WORDMARK,
+    gluedText(header).trim() || "(empty header)"
+  );
+  check("the landing page carries no mark", !MARK.test(signedInHtml));
+
+  /*
+   * Size is asserted as a relationship, not a value. The header is the one place
+   * the name is the hero, so it has to out-rank the 13–15px wordmark in the app
+   * chrome; pinning an exact `text-[Npx]` would fail the next time it is tuned,
+   * and tuning it is not a defect.
+   */
+  const headerSize = Number(/text-\[(\d+)px\]/.exec(header)?.[1] ?? 0);
+  check(
+    "the landing wordmark is set larger than the app chrome's",
+    headerSize >= 40,
+    `found ${headerSize}px; the chrome sets 13–15px`
+  );
+
+  check(
+    "Get started leads to the case list rather than a single case",
+    signedInHtml.includes('href="/cases"') && !signedInHtml.includes('href="/case"')
+  );
+
+  // --- the letter animation --------------------------------------------------
+  const letters = header.match(/wordmark-letter/g) ?? [];
+  const delays = [...header.matchAll(/animation-delay:(\d+)ms/g)].map((match) =>
+    Number(match[1])
+  );
+
+  check(
+    "the wordmark animates one letter at a time",
+    letters.length === WORDMARK.length,
+    `${letters.length} animated letters; the word is ${WORDMARK.length} long`
+  );
+  check(
+    "each letter is staggered behind the last",
+    delays.length === WORDMARK.length &&
+      delays.every((delay, index) => delay === index * LETTER_STAGGER_MS),
+    delays.join(", ") || "no delays found"
+  );
+  check(
+    "the split letters are announced as one word",
+    /role="img"/.test(header) &&
+      header.includes(`aria-label="${WORDMARK}"`) &&
+      (header.match(/aria-hidden="true"/g) ?? []).length === WORDMARK.length
+  );
+
+  globalThis.__AUTH__ = { isLoading: false, isAuthenticated: false };
+  globalThis.__FIXTURES__ = { "users:current": undefined };
+  const anonHtml = renderToStaticMarkup(createElement(LandingHero));
+  const anon = text(anonHtml);
+
+  check(
+    "a signed-out visitor still sees the product name",
+    gluedText(headerOf(anonHtml)).trim() === WORDMARK
+  );
+  check("Get started sends a signed-out visitor to sign-up", anonHtml.includes('href="/signup"'));
+  /*
+   * The header holds the name and nothing else, so the session link is gone from
+   * the landing page entirely. Signing back in is still reachable — the sign-up
+   * screen offers "I already have an account" — but this is the check that will
+   * fail if a session link is quietly reintroduced up here.
+   */
+  check(
+    "the landing header offers nothing but the name",
+    !/Log in|Your cases/.test(anon) && !anonHtml.includes('href="/signin"')
+  );
+
+  /*
+   * The animation must not fire for someone who asked for no motion. A source
+   * scan, because the media query lives in the stylesheet and never reaches the
+   * markup every other check in this section asserts on.
+   */
+  const css = readFileSync(resolve(process.cwd(), "app/globals.css"), "utf8");
+  /*
+   * Every reduced-motion block, not the first one. The stylesheet already has a
+   * global block that flattens animation *durations*, so searching for the first
+   * match finds something with nothing to do with the wordmark and the check
+   * fails for the wrong reason.
+   */
+  const reduceBlocks = [
+    ...css.matchAll(/@media\s*\(prefers-reduced-motion:[^)]*\)\s*\{([^}]*)\}/g),
+  ].map((match) => match[1]);
+
+  check(
+    "the letter animation is switched off for reduced motion",
+    reduceBlocks.some(
+      (block) => /\.wordmark-letter/.test(block) && /animation:\s*none/.test(block)
+    ),
+    `${reduceBlocks.length} reduced-motion block(s) found`
+  );
+
+  globalThis.__AUTH__ = { isLoading: false, isAuthenticated: true };
+  globalThis.__FIXTURES__ = { "users:current": SIGNED_IN_USER };
+  const workspaceHtml = renderToStaticMarkup(createElement(AppShell, null, null));
+  const workspace = text(workspaceHtml);
+
+  check(
+    "nothing in the signed-in workspace sends the renter back to the marketing page",
+    !workspaceHtml.includes('href="/"')
+  );
+  check("the workspace calls the landing page a dashboard no longer", !/Dashboard/.test(workspace));
+  check(
+    "the workspace offers the case list",
+    /Your cases/.test(workspace) && workspaceHtml.includes('href="/cases"')
+  );
+  check("the workspace carries the mark", MARK.test(workspaceHtml));
+
+  // The same mark on the auth screens, so the product is recognisable at the
+  // first screen a new renter sees.
+  check(
+    "the sign-in screen carries the same mark",
+    MARK.test(renderToStaticMarkup(createElement(SignIn)))
+  );
+
+  globalThis.__AUTH__ = undefined;
+  globalThis.__FIXTURES__ = undefined;
+}
+
+section("The case screen names the address the statement must be sent to");
+{
+  /*
+   * The empty state told the renter to forward their landlord's statement to a
+   * private address the case opens — and no screen in this UI ever showed one.
+   * The address is the only way a statement can reach the pipeline, so hiding it
+   * is a dead end rather than a cosmetic gap.
+   *
+   * The negative is the load-bearing half. The address is minted by the mail
+   * provider, so when a case has none the UI must show nothing rather than
+   * reconstruct the one it would have had.
+   */
+  const ADDRESS = "case-9f3a2b@agentmail.to";
+
+  globalThis.__AUTH__ = { isLoading: false, isAuthenticated: true };
+
+  const withAddress = renderInbox({
+    "cases:list": [{ ...MAIN_UI_CASE, inboxId: ADDRESS, inboxStatus: "READY" }],
+  });
+
+  check(
+    "the case address is shown in full",
+    withAddress.text.includes(ADDRESS),
+    withAddress.text.slice(0, 240)
+  );
+  check(
+    "the address is offered with a copy control",
+    /aria-label="Copy case-/.test(withAddress.html)
+  );
+  check(
+    "the panel says where mail sent there ends up",
+    /attached to this case/i.test(withAddress.text)
+  );
+  check(
+    "the panel claims nothing was recovered",
+    !/recovered|refunded|reimbursed/i.test(withAddress.text)
+  );
+
+  // Provisioning failed — the state the fourth case onward lands in, because the
+  // provider's plan allows three inboxes.
+  const failed = renderInbox({
+    "cases:list": [
+      {
+        ...MAIN_UI_CASE,
+        inboxStatus: "FAILED",
+        inboxError: '{"error":{"code":"limit_exceeded"}}',
+      },
+    ],
+  });
+
+  check(
+    "a failed address says what to do about it",
+    /AgentMail/i.test(failed.text) && /upgrade/i.test(failed.text),
+    failed.text.slice(0, 300)
+  );
+  check("a failed address offers a retry", /Try setting it up again/.test(failed.text));
+  check(
+    "a failed address is not invented",
+    !failed.text.includes("@agentmail.to"),
+    failed.text.slice(0, 300)
+  );
+  check(
+    "the raw provider error is not the message the renter reads",
+    !/limit_exceeded/.test(failed.text)
+  );
+
+  // Still being created.
+  const pending = renderInbox({
+    "cases:list": [{ ...MAIN_UI_CASE, inboxStatus: "PROVISIONING" }],
+  });
+
+  check("a pending address says it is still being set up", /Setting up/i.test(pending.text));
+  check(
+    "a pending address is not invented either",
+    !pending.text.includes("@agentmail.to")
+  );
+  check(
+    "a pending address offers no retry",
+    !/Try setting it up again/.test(pending.text)
+  );
+
+  // The wiring, not just the component: the case screen has to render it.
+  globalThis.__FIXTURES__ = {
+    "users:current": SIGNED_IN_USER,
+    "cases:list": [{ ...MAIN_UI_CASE, inboxId: ADDRESS, inboxStatus: "READY" }],
+    "deductions:listByCase": [],
+    "sources:listByCase": [],
+    "cases:getTimeline": [],
+    "letters:getForCase": null,
+    "emails:listByCase": [],
+  };
+  const overview = text(
+    renderToStaticMarkup(createElement(CaseDataProvider, null, createElement(ClarityCaseOverview)))
+  );
+
+  check(
+    "the case screen itself shows the address",
+    overview.includes(ADDRESS),
+    overview.slice(0, 240)
+  );
+
+  /*
+   * Where a finished creation lands, checked at the source because this harness
+   * cannot dispatch a submit: `useRouter` is stubbed and there is no DOM.
+   *
+   * The defect was a `router.push` into `/cases/<id>` — the older workspace —
+   * which meant creating a case threw the renter out of the UI they had just
+   * been using, and the only place the address was ever shown was the screen
+   * they were leaving.
+   */
+  const formSource = readFileSync(
+    resolve(process.cwd(), "components/new-case-form.tsx"),
+    "utf8"
+  );
+
+  check(
+    "creating a case lands in the main UI",
+    /router\.push\("\/case"\)/.test(formSource),
+    "components/new-case-form.tsx"
+  );
+  check(
+    "creating a case no longer lands in the older workspace",
+    !/router\.push\(\s*[`"]\/cases\//.test(formSource),
+    "components/new-case-form.tsx"
+  );
 
   globalThis.__AUTH__ = undefined;
   globalThis.__FIXTURES__ = undefined;

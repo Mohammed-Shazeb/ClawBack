@@ -3,19 +3,25 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { BriefcaseBusiness, LayoutDashboard, LogOut, ShieldCheck } from "lucide-react";
+import { BriefcaseBusiness, LogOut, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { Logo } from "./logo";
 import { useCurrentUser } from "./current-user";
 
 /*
  * Only routes that exist. The product is case-centric — evidence, the timeline
  * and the dispute letter all live inside a case — so there is no separate
  * top-level Evidence or Settings destination to link to.
+ *
+ * "Dashboard" used to point at `/`, which is now the marketing landing page, so
+ * clicking it threw a signed-in renter out of the app and onto the hero. `/`
+ * stopped being a dashboard when the landing page took that route over and the
+ * link was never updated. Both entries now stay inside the workspace.
  */
 const navigation = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/cases", label: "Cases", icon: BriefcaseBusiness },
+  { href: "/cases", label: "Your cases", icon: BriefcaseBusiness },
+  { href: "/cases/new", label: "New case", icon: Plus },
 ];
 
 /**
@@ -38,11 +44,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-page text-ink">
       <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-line bg-surface px-4 py-6 lg:flex">
-        <Link href="/" className="flex items-center gap-2.5 px-2">
-          <span className="flex size-8 items-center justify-center rounded-md bg-accent text-white">
-            <ShieldCheck size={17} aria-hidden="true" />
-          </span>
-          <span className="text-[15px] font-semibold tracking-[-0.03em] text-ink">clawback</span>
+        <Link
+          href={isSignedIn ? "/cases" : "/"}
+          className="px-2"
+          aria-label={isSignedIn ? "Your cases" : "Clawback home"}
+        >
+          <Logo />
         </Link>
 
         <nav className="mt-9 space-y-0.5" aria-label="Workspace">
@@ -50,7 +57,13 @@ export function AppShell({ children }: { children: ReactNode }) {
             Workspace
           </p>
           {navigation.map(({ href, label, icon: Icon }) => {
-            const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+            // `/cases/new` must not also light up "Your cases", so the case list
+            // matches its own path plus a case deep-link — but not the form.
+            const active =
+              href === "/cases"
+                ? pathname === "/cases" ||
+                  (pathname.startsWith("/cases/") && pathname !== "/cases/new")
+                : pathname === href;
             return (
               <Link
                 key={href}
@@ -98,9 +111,12 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <main className="min-h-screen lg:pl-64">
         <header className="flex h-14 items-center justify-between border-b border-line bg-surface px-5 sm:px-8 lg:px-10">
-          <Link href="/" className="flex items-center gap-2 lg:hidden">
-            <ShieldCheck size={18} className="text-accent" aria-hidden="true" />
-            <span className="text-[15px] font-semibold tracking-[-0.03em] text-ink">clawback</span>
+          <Link
+            href={isSignedIn ? "/cases" : "/"}
+            className="lg:hidden"
+            aria-label={isSignedIn ? "Your cases" : "Clawback home"}
+          >
+            <Logo />
           </Link>
           <div className="ml-auto flex items-center gap-3 text-xs text-ink-secondary">
             {isSignedIn && email ? (

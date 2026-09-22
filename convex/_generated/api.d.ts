@@ -16,6 +16,7 @@ import type * as authEmail from "../authEmail.js";
 import type * as caller from "../caller.js";
 import type * as cases from "../cases.js";
 import type * as deductions from "../deductions.js";
+import type * as diagnostics from "../diagnostics.js";
 import type * as emails from "../emails.js";
 import type * as errors from "../errors.js";
 import type * as extraction from "../extraction.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   caller: typeof caller;
   cases: typeof cases;
   deductions: typeof deductions;
+  diagnostics: typeof diagnostics;
   emails: typeof emails;
   errors: typeof errors;
   extraction: typeof extraction;

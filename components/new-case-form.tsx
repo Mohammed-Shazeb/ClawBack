@@ -79,13 +79,17 @@ export function NewCaseForm() {
     setError(null);
 
     try {
-      const caseId = await createCase({
+      await createCase({
         userId,
         jurisdiction: jurisdiction.trim(),
         depositAmount,
         totalDeductions,
       });
-      router.push(`/cases/${caseId}`);
+
+      // Land in the main UI, not the older `/cases` workspace. The renter is
+      // about to be told to forward their statement to the case address, and
+      // that address lives on the case screen.
+      router.push("/case");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The case could not be created.");
       setSaving(false);

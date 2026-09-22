@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { Mail, ShieldCheck } from "lucide-react";
+import { Mail } from "lucide-react";
 
 import { useCurrentUser } from "@/components/current-user";
+import { LogoMark } from "@/components/logo";
 import { SignIn as MagicLinkSignIn } from "@/components/sign-in";
 
 type Mode = "signup" | "signin" | "code";
@@ -70,8 +71,8 @@ export function AuthForm({ initialMode = "signup" }: { initialMode?: Mode }) {
 
   return (
     <div className="mx-auto flex max-w-md flex-col justify-center px-5 py-16 sm:px-8">
-      <span className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <ShieldCheck size={19} aria-hidden="true" />
+      <span className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+        <LogoMark className="size-5" />
       </span>
 
       <h1 className="mt-5 text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-foreground">

@@ -330,3 +330,46 @@
     opacity: 0.35;
   }
 }
+
+/*
+ * The landing wordmark, one letter at a time.
+ *
+ * The name assembles rather than simply appearing. Each letter carries its own
+ * `animation-delay` inline (set from its index in the component), so this rule
+ * only describes the motion — the stagger lives with the letters.
+ *
+ * `backwards` is load-bearing: without it a letter sits at full opacity until
+ * its delay elapses, and the word flashes complete before it animates.
+ *
+ * Used on the root page only. Nothing else in the app is letter-split, so this
+ * class has exactly one caller.
+ */
+@utility wordmark-letter {
+  display: inline-block;
+  animation: wordmark-letter 0.62s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+@keyframes wordmark-letter {
+  from {
+    opacity: 0;
+    transform: translateY(0.42em);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * The global `prefers-reduced-motion` block above flattens every animation's
+ * *duration*, but not its delay — and this one fills `backwards`, so a letter
+ * would sit invisible for up to 385ms and then snap in one at a time. Switching
+ * the animation off entirely is what makes the whole word appear at once, which
+ * is the point. Unlayered on purpose, so it beats the utility rather than ties
+ * with it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .wordmark-letter {
+    animation: none;
+  }
+}

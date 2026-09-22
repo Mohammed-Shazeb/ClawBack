@@ -2,9 +2,10 @@
 
 import { FormEvent, useState } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { Mail, ShieldCheck } from "lucide-react";
+import { Mail } from "lucide-react";
 
 import { AppShell } from "./app-shell";
+import { LogoMark } from "./logo";
 import { Panel } from "./ui/primitives";
 
 /**
@@ -60,8 +61,8 @@ export function SignIn() {
   return (
     <AppShell>
       <div className="mx-auto flex max-w-md flex-col justify-center px-5 py-16 sm:px-8">
-        <span className="flex size-10 items-center justify-center rounded-md bg-accent text-white">
-          <ShieldCheck size={19} aria-hidden="true" />
+        <span className="flex size-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+          <LogoMark className="size-5" />
         </span>
 
         <h1 className="mt-5 text-[1.75rem] font-semibold leading-tight tracking-[-0.03em] text-ink">
