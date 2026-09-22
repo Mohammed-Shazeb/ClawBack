@@ -40,8 +40,8 @@ export function LandingHero() {
       <FlowField className="absolute inset-0 h-full w-full" />
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_35%,rgba(0,0,0,0.75)_100%)]" />
 
-      <header className="absolute inset-x-0 top-5 z-20">
-        <div className="flex items-center justify-center px-6 pt-11">
+      <header className="absolute inset-x-0 top-0 z-20">
+        <div className="flex items-center justify-center px-6 pt-8">
           {/*
             One element per letter so the name assembles rather than appearing.
 
@@ -52,7 +52,7 @@ export function LandingHero() {
           <span
             role="img"
             aria-label={WORDMARK}
-            className="mt-10 text-[80px] font-semibold leading-none tracking-[-0.04em] text-white"
+            className="text-[80px] font-semibold leading-none tracking-[-0.04em] text-white"
           >
             {WORDMARK.split("").map((letter, index) => (
               <span
