@@ -46,3 +46,10 @@ next-env.d.ts
 
 # local workbuddy state
 /.workbuddy-ai/
+
+# local project status and verification reports
+/PROJECT-STATUS.md
+/SAMPLE-DEPOSIT-STATEMENT.txt
+/SUBMISSION-STATUS.md
+/UI-VERIFICATION.md
+/VERIFICATION-REPORT.md
